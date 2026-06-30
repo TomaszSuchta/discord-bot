@@ -21,7 +21,7 @@ const config = {
   badWords: ['badword1', 'badword2'],  // Add your bad words here
   customCommands: {                    // Add your custom commands here
     'rules': 'Follow the server rules or you will be banned!',
-    'socials': 'Instagram: @tomaszsuchtabiz | YouTube: @tomaszsuchtabiz',
+    'socials': 'Instagram: @yourhandle | YouTube: @yourchannel',
     'discord': 'Join our community: https://discord.gg/yourinvite',
   },
   warnings: {},                        // Stored in memory (resets on restart)
@@ -33,7 +33,7 @@ const config = {
 async function updateMemberCount(guild) {
   const channelName = config.memberCounterChannelName.replace('{count}', guild.memberCount);
   let channel = guild.channels.cache.find(
-    (c) => c.name.startsWith('👥') && c.type === ChannelType.GuildVoice
+    (c) => c.name.startsWith('👤') && c.type === ChannelType.GuildVoice
   );
   if (channel) {
     await channel.setName(channelName).catch(() => {});
