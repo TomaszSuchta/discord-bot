@@ -145,6 +145,11 @@ client.once('clientReady', async () => {
 // ─── WELCOME NEW MEMBERS ────────────────────────────────────────────────────
 client.on('guildMemberAdd', (member) => {
   updateMemberCount(member.guild);
+
+  // Auto-assign role
+  const role = member.guild.roles.cache.find((r) => r.name === '👤⬩Member');
+  if (role) member.roles.add(role).catch(() => {});
+
   const welcomeChannel = member.guild.channels.cache.find(
     (ch) => ch.name === config.welcomeChannelName
   );
