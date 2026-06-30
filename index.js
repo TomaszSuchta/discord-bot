@@ -21,21 +21,43 @@ const config = {
   badWords: ['badword1', 'badword2'],  // Add your bad words here
   customCommands: {                    // Add your custom commands here
     'rules': 'Follow the server rules or you will be banned!',
-    'socials': 'Instagram: @yourhandle | YouTube: @yourchannel',
+    'socials': 'Instagram: @tomaszsuchtabiz | YouTube: @tomaszsuchtabiz',
     'discord': 'Join our community: https://discord.gg/yourinvite',
   },
   warnings: {},                        // Stored in memory (resets on restart)
+  memberCounterChannelName: '👤⬩Members: {count}', // Voice channel name template
 };
 // ───────────────────────────────────────────────────────────────────────────
+
+// ─── MEMBER COUNTER ─────────────────────────────────────────────────────────
+async function updateMemberCount(guild) {
+  const channelName = config.memberCounterChannelName.replace('{count}', guild.memberCount);
+  let channel = guild.channels.cache.find(
+    (c) => c.name.startsWith('👥') && c.type === ChannelType.GuildVoice
+  );
+  if (channel) {
+    await channel.setName(channelName).catch(() => {});
+  } else {
+    await guild.channels.create({
+      name: channelName,
+      type: ChannelType.GuildVoice,
+      permissionOverwrites: [
+        { id: guild.roles.everyone, deny: [PermissionFlagsBits.Connect] },
+      ],
+    });
+  }
+}
 
 // ─── READY ─────────────────────────────────────────────────────────────────
 client.once('ready', () => {
   console.log(`✅ Bot is online as ${client.user.tag}`);
   client.user.setActivity('Moderating the server', { type: 3 });
+  client.guilds.cache.forEach((guild) => updateMemberCount(guild));
 });
 
 // ─── WELCOME NEW MEMBERS ────────────────────────────────────────────────────
 client.on('guildMemberAdd', (member) => {
+  updateMemberCount(member.guild);
   const welcomeChannel = member.guild.channels.cache.find(
     (ch) => ch.name === config.welcomeChannelName
   );
@@ -50,6 +72,11 @@ client.on('guildMemberAdd', (member) => {
     .setTimestamp();
 
   welcomeChannel.send({ embeds: [embed] });
+});
+
+// ─── MEMBER LEAVE (update counter) ──────────────────────────────────────────
+client.on('guildMemberRemove', (member) => {
+  updateMemberCount(member.guild);
 });
 
 // ─── MESSAGE HANDLER ────────────────────────────────────────────────────────
