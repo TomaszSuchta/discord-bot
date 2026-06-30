@@ -141,14 +141,14 @@ client.once('clientReady', async () => {
   client.user.setActivity('Moderating the server', { type: 3 });
 
   for (const guild of client.guilds.cache.values()) {
-    await registerCommands(client.user.id, guild.id);
-    await updateMemberCount(guild);
+    await registerCommands(client.user.id, guild.id).catch(err => console.error('Command reg error:', err));
+    await updateMemberCount(guild).catch(err => console.error('Member count error:', err));
   }
 });
 
 // ─── WELCOME NEW MEMBERS ────────────────────────────────────────────────────
-client.on('guildMemberAdd', (member) => {
-  updateMemberCount(member.guild);
+client.on('guildMemberAdd', async (member) => {
+  await updateMemberCount(member.guild).catch(err => console.error('MemberAdd count error:', err));
 
   // Auto-assign role
   const role = member.guild.roles.cache.find((r) => r.name === '👤⬩Member');
@@ -168,8 +168,8 @@ client.on('guildMemberAdd', (member) => {
   welcomeChannel.send({ embeds: [embed] });
 });
 
-client.on('guildMemberRemove', (member) => {
-  updateMemberCount(member.guild);
+client.on('guildMemberRemove', async (member) => {
+  await updateMemberCount(member.guild).catch(err => console.error('MemberRemove count error:', err));
 });
 
 // ─── AUTO MOD (bad words) ────────────────────────────────────────────────────
@@ -185,6 +185,7 @@ client.on('messageCreate', async (message) => {
 
 // ─── SLASH COMMAND HANDLER ───────────────────────────────────────────────────
 client.on('interactionCreate', async (interaction) => {
+  try {
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName, guild, member } = interaction;
@@ -302,6 +303,10 @@ client.on('interactionCreate', async (interaction) => {
       )
       .setFooter({ text: 'Use / to see all commands with their options!' });
     interaction.editReply({ embeds: [embed] });
+  }
+  } catch (err) {
+    console.error('Interaction error:', err);
+    try { await interaction.editReply('❌ Something went wrong.'); } catch {}
   }
 });
 
