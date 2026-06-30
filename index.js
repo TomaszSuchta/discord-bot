@@ -4,6 +4,10 @@ const {
 } = require('discord.js');
 require('dotenv').config();
 
+// ─── KEEP-ALIVE HTTP SERVER (required for Railway) ──────────────────────────
+const http = require('http');
+http.createServer((req, res) => res.end('Bot is running!')).listen(process.env.PORT || 3000);
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
