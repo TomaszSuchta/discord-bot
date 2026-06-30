@@ -186,7 +186,7 @@ client.on('interactionCreate', async (interaction) => {
   const { commandName, guild, member } = interaction;
   const isMod = member.permissions.has(PermissionFlagsBits.ModerateMembers);
 
-  await interaction.deferReply({ ephemeral: false });
+  await interaction.deferReply();
 
   // ── KICK ──
   if (commandName === 'kick') {
@@ -361,3 +361,7 @@ function logAction(guild, action, target, moderator, reason) {
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
 client.login(process.env.DISCORD_TOKEN);
+
+// Keep process alive
+process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err));
+process.on('uncaughtException', (err) => console.error('Uncaught exception:', err));
