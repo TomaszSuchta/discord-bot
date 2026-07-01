@@ -39,26 +39,26 @@ http.createServer(async (req, res) => {
             await channel.send({ content: data.image });
           }
         } else if (mode === 'imageTop') {
-          // Send image first, then embed
-          if (data.image) {
-            if (data.image.startsWith('data:')) {
-              const base64 = data.image.split(',')[1];
-              const buf = Buffer.from(base64, 'base64');
-              const att = new AttachmentBuilder(buf, { name: 'image.png' });
-              await channel.send({ files: [att] });
-            } else {
-              await channel.send({ content: data.image });
-            }
-          }
+          // Everything in one embed — image at top via setImage, color bar runs full height
           const embed = new EmbedBuilder()
             .setColor(data.color || '#5865F2')
             .setTimestamp();
-          if (data.title) embed.setTitle(data.title);
           if (data.description) embed.setDescription(data.description);
           if (data.thumbnail) embed.setThumbnail(data.thumbnail);
           if (data.footer) embed.setFooter({ text: data.footer });
           if (data.fields && data.fields.length > 0) embed.addFields(data.fields);
-          await channel.send({ embeds: [embed] });
+          if (data.image && data.image.startsWith('data:')) {
+            const base64 = data.image.split(',')[1];
+            const buf = Buffer.from(base64, 'base64');
+            const att = new AttachmentBuilder(buf, { name: 'image.png' });
+            embed.setImage('attachment://image.png');
+            await channel.send({ embeds: [embed], files: [att] });
+          } else if (data.image) {
+            embed.setImage(data.image);
+            await channel.send({ embeds: [embed] });
+          } else {
+            await channel.send({ embeds: [embed] });
+          }
         } else {
           const embed = new EmbedBuilder()
             .setColor(data.color || '#5865F2')
