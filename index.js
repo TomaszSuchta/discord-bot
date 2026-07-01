@@ -39,26 +39,24 @@ http.createServer(async (req, res) => {
             await channel.send({ content: data.image });
           }
         } else if (mode === 'imageTop') {
-          // Everything in one embed — image at top via setImage, color bar runs full height
-          const embed = new EmbedBuilder()
-            .setColor(data.color || '#5865F2')
-            .setTimestamp();
+          // Send image first, then embed below
+          if (data.image) {
+            if (data.image.startsWith('data:')) {
+              const base64 = data.image.split(',')[1];
+              const buf = Buffer.from(base64, 'base64');
+              const att = new AttachmentBuilder(buf, { name: 'image.png' });
+              await channel.send({ files: [att] });
+            } else {
+              await channel.send({ content: data.image });
+            }
+          }
+          const embed = new EmbedBuilder().setColor(data.color || '#5865F2');
+          if (data.title) embed.setTitle(data.title);
           if (data.description) embed.setDescription(data.description);
           if (data.thumbnail) embed.setThumbnail(data.thumbnail);
           if (data.footer) embed.setFooter({ text: data.footer });
           if (data.fields && data.fields.length > 0) embed.addFields(data.fields);
-          if (data.image && data.image.startsWith('data:')) {
-            const base64 = data.image.split(',')[1];
-            const buf = Buffer.from(base64, 'base64');
-            const att = new AttachmentBuilder(buf, { name: 'image.png' });
-            embed.setImage('attachment://image.png');
-            await channel.send({ embeds: [embed], files: [att] });
-          } else if (data.image) {
-            embed.setImage(data.image);
-            await channel.send({ embeds: [embed] });
-          } else {
-            await channel.send({ embeds: [embed] });
-          }
+          await channel.send({ embeds: [embed] });
         } else {
           const embed = new EmbedBuilder()
             .setColor(data.color || '#5865F2')
@@ -94,8 +92,8 @@ http.createServer(async (req, res) => {
     if (!guild) { res.writeHead(500); return res.end(JSON.stringify({ error: 'Bot not in any server' })); }
     const channels = guild.channels.cache
       .filter(c => c.type === 0)
-      .map(c => c.name)
-      .sort();
+      .map(c => ({ name: c.name, id: c.id }))
+      .sort((a, b) => a.name.localeCompare(b.name));
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify(channels));
   }
@@ -433,8 +431,7 @@ client.on('interactionCreate', async (interaction) => {
       const embed = new EmbedBuilder()
         .setTitle(title)
         .setDescription(description)
-        .setColor(color)
-        .setTimestamp();
+        .setColor(color);
 
       if (image) embed.setImage(image);
       if (thumbnail) embed.setThumbnail(thumbnail);
