@@ -87,6 +87,42 @@ http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && req.url === '/config') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    const guild = client.guilds.cache.first();
+    const roles = guild ? guild.roles.cache.filter(r => r.name !== '@everyone').map(r => ({ name: r.name, id: r.id })).sort((a,b) => a.name.localeCompare(b.name)) : [];
+    return res.end(JSON.stringify({ config: {
+      welcomeChannelName: config.welcomeChannelName,
+      logChannelName: config.logChannelName,
+      autoRole: config.autoRole,
+      badWords: config.badWords,
+      permissions: config.permissions,
+      memberCounterChannelName: config.memberCounterChannelName,
+    }, roles }));
+  }
+
+  if (req.method === 'POST' && req.url === '/config') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        if (data.welcomeChannelName !== undefined) config.welcomeChannelName = data.welcomeChannelName;
+        if (data.logChannelName !== undefined) config.logChannelName = data.logChannelName;
+        if (data.autoRole !== undefined) config.autoRole = data.autoRole;
+        if (data.badWords !== undefined) config.badWords = data.badWords;
+        if (data.permissions !== undefined) config.permissions = data.permissions;
+        if (data.memberCounterChannelName !== undefined) config.memberCounterChannelName = data.memberCounterChannelName;
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
   if (req.method === 'GET' && req.url === '/channels') {
     const guild = client.guilds.cache.first();
     if (!guild) { res.writeHead(500); return res.end(JSON.stringify({ error: 'Bot not in any server' })); }
@@ -129,7 +165,25 @@ const config = {
     'discord': 'Join our community: https://discord.gg/yourinvite',
   },
   warnings: {},
+  // Role-based permissions — lists of role names allowed to use each command group
+  permissions: {
+    kick:     ['👑⬩Owner', '📖⬩Moderator'],
+    ban:      ['👑⬩Owner', '📖⬩Moderator'],
+    unban:    ['👑⬩Owner', '📖⬩Moderator'],
+    mute:     ['👑⬩Owner', '📖⬩Moderator'],
+    unmute:   ['👑⬩Owner', '📖⬩Moderator'],
+    warn:     ['👑⬩Owner', '📖⬩Moderator'],
+    clear:    ['👑⬩Owner', '📖⬩Moderator'],
+    purge:    ['👑⬩Owner', '📖⬩Moderator'],
+    announce: ['👑⬩Owner'],
+    close:    ['👑⬩Owner', '📖⬩Moderator'],
+  },
 };
+
+function hasPermission(member, command) {
+  const allowed = config.permissions[command] || [];
+  return member.roles.cache.some(r => allowed.includes(r.name));
+}
 
 // ─── SLASH COMMANDS ──────────────────────────────────────────────────────────
 const commands = [
@@ -323,7 +377,7 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.deferReply();
 
     if (commandName === 'kick') {
-      if (!isMod) return interaction.editReply('❌ No permission.');
+      if (!hasPermission(member, 'kick')) return interaction.editReply('❌ You do not have permission to use this command.');
       const target = interaction.options.getMember('user');
       const reason = interaction.options.getString('reason') || 'No reason provided';
       await target.kick(reason);
@@ -331,7 +385,7 @@ client.on('interactionCreate', async (interaction) => {
       logAction(guild, '🦵 KICK', target.user, interaction.user, reason);
 
     } else if (commandName === 'ban') {
-      if (!isMod) return interaction.editReply('❌ No permission.');
+      if (!hasPermission(member, 'ban')) return interaction.editReply('❌ You do not have permission to use this command.');
       const target = interaction.options.getMember('user');
       const reason = interaction.options.getString('reason') || 'No reason provided';
       await target.ban({ reason });
@@ -339,13 +393,13 @@ client.on('interactionCreate', async (interaction) => {
       logAction(guild, '🔨 BAN', target.user, interaction.user, reason);
 
     } else if (commandName === 'unban') {
-      if (!isMod) return interaction.editReply('❌ No permission.');
+      if (!hasPermission(member, 'unban')) return interaction.editReply('❌ You do not have permission to use this command.');
       const userId = interaction.options.getString('userid');
       await guild.members.unban(userId);
       interaction.editReply(`✅ User \`${userId}\` unbanned.`);
 
     } else if (commandName === 'mute') {
-      if (!isMod) return interaction.editReply('❌ No permission.');
+      if (!hasPermission(member, 'mute')) return interaction.editReply('❌ You do not have permission to use this command.');
       const target = interaction.options.getMember('user');
       const duration = interaction.options.getInteger('duration');
       const unit = interaction.options.getString('unit');
@@ -362,14 +416,14 @@ client.on('interactionCreate', async (interaction) => {
       }, ms);
 
     } else if (commandName === 'unmute') {
-      if (!isMod) return interaction.editReply('❌ No permission.');
+      if (!hasPermission(member, 'unmute')) return interaction.editReply('❌ You do not have permission to use this command.');
       const target = interaction.options.getMember('user');
       const mutedRole = guild.roles.cache.find(r => r.name === 'Muted');
       if (mutedRole) await target.roles.remove(mutedRole).catch(() => {});
       interaction.editReply(`✅ **${target.user.tag}** unmuted.`);
 
     } else if (commandName === 'warn') {
-      if (!isMod) return interaction.editReply('❌ No permission.');
+      if (!hasPermission(member, 'warn')) return interaction.editReply('❌ You do not have permission to use this command.');
       const target = interaction.options.getMember('user');
       const reason = interaction.options.getString('reason') || 'No reason provided';
       const uid = target.user.id;
@@ -387,14 +441,14 @@ client.on('interactionCreate', async (interaction) => {
       interaction.editReply(`⚠️ **${target.user.tag}** — ${warns.length} warning(s):\n${list}`);
 
     } else if (commandName === 'clear') {
-      if (!isMod) return interaction.editReply('❌ No permission.');
+      if (!hasPermission(member, 'clear')) return interaction.editReply('❌ You do not have permission to use this command.');
       const amount = interaction.options.getInteger('amount');
       await interaction.channel.bulkDelete(amount, true);
       interaction.editReply(`✅ Deleted ${amount} message(s).`);
       setTimeout(() => interaction.deleteReply().catch(() => {}), 3000);
 
     } else if (commandName === 'purge') {
-      if (!isMod) return interaction.editReply('❌ No permission.');
+      if (!hasPermission(member, 'purge')) return interaction.editReply('❌ You do not have permission to use this command.');
       const target = interaction.options.getMember('user');
       const amount = interaction.options.getInteger('amount');
       const messages = await interaction.channel.messages.fetch({ limit: amount });
@@ -418,7 +472,7 @@ client.on('interactionCreate', async (interaction) => {
       interaction.editReply(config.customCommands['socials']);
 
     } else if (commandName === 'announce') {
-      if (!isMod) return interaction.editReply('❌ No permission.');
+      if (!hasPermission(member, 'announce')) return interaction.editReply('❌ You do not have permission to use this command.');
       const title = interaction.options.getString('title');
       const description = interaction.options.getString('description').split('\\n').join('\n');
       const channel = interaction.options.getChannel('channel') || interaction.channel;
@@ -499,7 +553,7 @@ async function handleTicketCreate(interaction) {
 }
 
 async function handleTicketClose(interaction) {
-  if (!interaction.member.permissions.has(PermissionFlagsBits.ModerateMembers))
+  if (!hasPermission(interaction.member, 'close'))
     return interaction.editReply('❌ Only moderators can close tickets.');
   if (!interaction.channel.name.startsWith('ticket-'))
     return interaction.editReply('❌ This is not a ticket channel.');
