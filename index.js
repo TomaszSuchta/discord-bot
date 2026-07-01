@@ -7,10 +7,62 @@ const {
 } = require('discord.js');
 require('dotenv').config();
 
-// ─── KEEP-ALIVE HTTP SERVER ──────────────────────────────────────────────────
+// ─── HTTP SERVER (keep-alive + announce API) ─────────────────────────────────
 const http = require('http');
-http.createServer((req, res) => res.end('Bot is running!')).listen(process.env.PORT || 3000, () => {
-  console.log('HTTP keep-alive server running');
+http.createServer(async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+
+  if (req.method === 'POST' && req.url === '/announce') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const data = JSON.parse(body);
+        const guild = client.guilds.cache.first();
+        if (!guild) { res.writeHead(500); return res.end(JSON.stringify({ error: 'Bot not in any server' })); }
+        const channel = guild.channels.cache.find(c => c.name === data.channel && c.type === 0);
+        if (!channel) { res.writeHead(404); return res.end(JSON.stringify({ error: 'Channel not found' })); }
+
+        const { EmbedBuilder } = require('discord.js');
+        const embed = new EmbedBuilder()
+          .setTitle(data.title || null)
+          .setDescription(data.description || null)
+          .setColor(data.color || '#5865F2')
+          .setTimestamp();
+        if (data.image) embed.setImage(data.image);
+        if (data.thumbnail) embed.setThumbnail(data.thumbnail);
+        if (data.footer) embed.setFooter({ text: data.footer });
+        if (data.fields && data.fields.length > 0) embed.addFields(data.fields);
+
+        await channel.send({ embeds: [embed] });
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && req.url === '/channels') {
+    const guild = client.guilds.cache.first();
+    if (!guild) { res.writeHead(500); return res.end(JSON.stringify({ error: 'Bot not in any server' })); }
+    const channels = guild.channels.cache
+      .filter(c => c.type === 0)
+      .map(c => c.name)
+      .sort();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(channels));
+  }
+
+  res.writeHead(200);
+  res.end('Bot is running!');
+}).listen(process.env.PORT || 3000, () => {
+  console.log('HTTP server running');
 });
 
 // ─── CLIENT ──────────────────────────────────────────────────────────────────
