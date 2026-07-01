@@ -36,12 +36,13 @@ http.createServer(async (req, res) => {
       joinDM: config.joinDM,
       antiSpam: config.antiSpam,
       warnThresholds: config.warnThresholds,
+      introSystem: config.introSystem,
     }, roles }));
   }
 
   if (req.method === 'POST' && req.url === '/config') {
     const data = await parseBody();
-    const allowed = ['welcomeChannelName','logChannelName','autoRole','badWords','permissions','memberCounterChannelName','joinDM','antiSpam','warnThresholds'];
+    const allowed = ['welcomeChannelName','logChannelName','autoRole','badWords','permissions','memberCounterChannelName','joinDM','antiSpam','warnThresholds','introSystem'];
     allowed.forEach(k => { if (data[k] !== undefined) config[k] = data[k]; });
     saveConfig();
     res.writeHead(200); return res.end(JSON.stringify({ success: true }));
@@ -183,6 +184,19 @@ const defaultConfig = {
     muteDuration: 60,
     banAt: 5,
   },
+  introSystem: {
+    enabled: false,
+    channelId: '',
+    channelName: '',
+    minWords: 15,
+    successMsg: 'Welcome {mention} 🦅 check your DMs I just sent you a gift',
+    shortMsg: "That's too short, I still don't know shit about you 😤. Try again",
+    dmTitle: '',
+    dmDesc: '',
+    dmLink: '',
+    color: '#5865F2',
+    dmImage: '',
+  },
   permissions: {
     kick:     ['👑⬩Owner', '📖⬩Moderator'],
     ban:      ['👑⬩Owner', '📖⬩Moderator'],
@@ -203,6 +217,8 @@ function saveConfig() { saveJSON('config.json', config); }
 let warnings = loadJSON('warnings.json', {});
 let reactionRoles = loadJSON('reaction-roles.json', {});
 const spamTracker = {};
+const introCompleted = loadJSON('intro-completed.json', {});
+function saveIntroCompleted() { saveJSON('intro-completed.json', introCompleted); }
 
 function saveWarnings() { saveJSON('warnings.json', warnings); }
 function saveReactionRoles() { saveJSON('reaction-roles.json', reactionRoles); }
@@ -417,6 +433,43 @@ client.on('messageCreate', async (message) => {
     const warn = await message.channel.send(`⚠️ ${message.author}, that language isn't allowed here.`);
     setTimeout(() => warn.delete().catch(() => {}), 5000);
     return;
+  }
+
+  // Intro system
+  if (config.introSystem?.enabled && config.introSystem?.channelId) {
+    if (message.channel.id === config.introSystem.channelId && !introCompleted[message.author.id]) {
+      const wordCount = message.content.trim().split(/\s+/).length;
+      const { successMsg, shortMsg, minWords, dmTitle, dmDesc, dmLink, color, dmImage } = config.introSystem;
+      if (wordCount >= (minWords || 15)) {
+        // Mark as completed
+        introCompleted[message.author.id] = true;
+        saveIntroCompleted();
+        // Reply in channel
+        const reply = successMsg.replace('{mention}', `<@${message.author.id}>`);
+        await message.reply(reply).catch(() => {});
+        // Send DM with resource
+        try {
+          if (dmTitle || dmDesc) {
+            const embed = new EmbedBuilder().setColor(color || '#5865F2');
+            if (dmTitle) embed.setTitle(dmTitle);
+            if (dmDesc) embed.setDescription(dmDesc);
+            if (dmImage) embed.setImage(dmImage);
+            const payload = { embeds: [embed] };
+            if (dmLink) {
+              const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+              const btn = new ButtonBuilder().setLabel('View Resource →').setURL(dmLink).setStyle(ButtonStyle.Link);
+              payload.components = [new ActionRowBuilder().addComponents(btn)];
+            }
+            await message.author.send(payload).catch(() => {});
+          } else if (dmLink) {
+            await message.author.send(dmLink).catch(() => {});
+          }
+        } catch (err) { console.error('Intro DM error:', err); }
+      } else {
+        await message.reply(shortMsg || "That's too short! Try again.").catch(() => {});
+      }
+      return;
+    }
   }
 
   // Anti-spam
