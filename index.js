@@ -50,9 +50,15 @@ const commands = [
     .addStringOption(o => o.setName('reason').setDescription('Reason')),
   new SlashCommandBuilder().setName('unban').setDescription('Unban a user by ID')
     .addStringOption(o => o.setName('userid').setDescription('User ID').setRequired(true)),
-  new SlashCommandBuilder().setName('mute').setDescription('Timeout a member')
+  new SlashCommandBuilder().setName('mute').setDescription('Mute a member (cannot type, can use voice)')
     .addUserOption(o => o.setName('user').setDescription('User to mute').setRequired(true))
-    .addIntegerOption(o => o.setName('duration').setDescription('Duration in minutes').setRequired(true).setMinValue(1).setMaxValue(40320))
+    .addIntegerOption(o => o.setName('duration').setDescription('Duration amount').setRequired(true).setMinValue(1))
+    .addStringOption(o => o.setName('unit').setDescription('Duration unit').setRequired(true)
+      .addChoices(
+        { name: 'Minutes', value: 'minutes' },
+        { name: 'Hours', value: 'hours' },
+        { name: 'Days', value: 'days' },
+      ))
     .addStringOption(o => o.setName('reason').setDescription('Reason')),
   new SlashCommandBuilder().setName('unmute').setDescription('Remove timeout from a member')
     .addUserOption(o => o.setName('user').setDescription('User to unmute').setRequired(true)),
@@ -125,6 +131,29 @@ function logAction(guild, action, target, moderator, reason) {
   } catch (err) {
     console.error('Log error:', err);
   }
+}
+
+// ─── MUTED ROLE SETUP ────────────────────────────────────────────────────────
+async function getMutedRole(guild) {
+  let role = guild.roles.cache.find(r => r.name === 'Muted');
+  if (!role) {
+    role = await guild.roles.create({
+      name: 'Muted',
+      color: '#818386',
+      reason: 'Auto-created muted role',
+    });
+    // Deny Send Messages in all text channels, allow voice
+    for (const channel of guild.channels.cache.values()) {
+      if (channel.type === ChannelType.GuildText) {
+        await channel.permissionOverwrites.create(role, {
+          SendMessages: false,
+          AddReactions: false,
+        }).catch(() => {});
+      }
+    }
+    console.log('Created Muted role');
+  }
+  return role;
 }
 
 // ─── READY ───────────────────────────────────────────────────────────────────
@@ -212,16 +241,25 @@ client.on('interactionCreate', async (interaction) => {
     } else if (commandName === 'mute') {
       if (!isMod) return interaction.editReply('❌ No permission.');
       const target = interaction.options.getMember('user');
-      const minutes = interaction.options.getInteger('duration');
+      const duration = interaction.options.getInteger('duration');
+      const unit = interaction.options.getString('unit');
       const reason = interaction.options.getString('reason') || 'No reason provided';
-      await target.timeout(minutes * 60 * 1000, reason);
-      interaction.editReply(`✅ **${target.user.tag}** muted for ${minutes} min. Reason: ${reason}`);
-      logAction(guild, `🔇 MUTE (${minutes}m)`, target.user, interaction.user, reason);
+      const msMap = { minutes: 60 * 1000, hours: 60 * 60 * 1000, days: 24 * 60 * 60 * 1000 };
+      const ms = duration * msMap[unit];
+      const mutedRole = await getMutedRole(guild);
+      await target.roles.add(mutedRole, reason);
+      interaction.editReply(`✅ **${target.user.tag}** muted for ${duration} ${unit}. Reason: ${reason}`);
+      logAction(guild, `🔇 MUTE (${duration} ${unit})`, target.user, interaction.user, reason);
+      setTimeout(async () => {
+        await target.roles.remove(mutedRole).catch(() => {});
+        console.log(`Auto-unmuted ${target.user.tag} after ${duration} ${unit}`);
+      }, ms);
 
     } else if (commandName === 'unmute') {
       if (!isMod) return interaction.editReply('❌ No permission.');
       const target = interaction.options.getMember('user');
-      await target.timeout(null);
+      const mutedRole = guild.roles.cache.find(r => r.name === 'Muted');
+      if (mutedRole) await target.roles.remove(mutedRole).catch(() => {});
       interaction.editReply(`✅ **${target.user.tag}** unmuted.`);
 
     } else if (commandName === 'warn') {
