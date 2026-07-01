@@ -163,7 +163,14 @@ const defaultConfig = {
   },
   joinDM: {
     enabled: false,
-    message: 'Welcome to the server! Make sure to read the rules.',
+    title: '',
+    description: '',
+    color: '#5865F2',
+    image: '',
+    thumbnail: '',
+    footer: '',
+    btnLabel: '',
+    btnUrl: '',
   },
   antiSpam: {
     enabled: true,
@@ -350,8 +357,43 @@ client.on('guildMemberAdd', async (member) => {
   }
 
   // Join DM
-  if (config.joinDM?.enabled && config.joinDM?.message) {
-    await member.send(config.joinDM.message).catch(() => {});
+  if (config.joinDM?.enabled) {
+    try {
+      const dm = config.joinDM;
+      const username = member.user.username;
+      const replaceUser = (str) => str ? str.replace(/\{user\}/g, username) : str;
+
+      if (dm.title || dm.description) {
+        const embed = new EmbedBuilder().setColor(dm.color || '#5865F2');
+        if (dm.title) embed.setTitle(replaceUser(dm.title));
+        if (dm.description) embed.setDescription(replaceUser(dm.description));
+        if (dm.thumbnail) embed.setThumbnail(dm.thumbnail);
+        if (dm.footer) embed.setFooter({ text: dm.footer });
+        if (dm.image && !dm.image.startsWith('data:')) embed.setImage(dm.image);
+
+        const msgPayload = { embeds: [embed] };
+
+        // Button as a component row
+        if (dm.btnLabel && dm.btnUrl) {
+          const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+          const btn = new ButtonBuilder().setLabel(dm.btnLabel).setURL(dm.btnUrl).setStyle(ButtonStyle.Link);
+          msgPayload.components = [new ActionRowBuilder().addComponents(btn)];
+        }
+
+        // Handle uploaded base64 image
+        if (dm.image?.startsWith('data:')) {
+          const buf = Buffer.from(dm.image.split(',')[1], 'base64');
+          embed.setImage('attachment://dm-image.png');
+          msgPayload.files = [new AttachmentBuilder(buf, { name: 'dm-image.png' })];
+        }
+
+        await member.send(msgPayload).catch(() => {});
+      } else if (dm.message) {
+        await member.send(replaceUser(dm.message)).catch(() => {});
+      }
+    } catch (err) {
+      console.error('Join DM error:', err);
+    }
   }
 
   // Mod log
