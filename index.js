@@ -69,6 +69,9 @@ const commands = [
     .addUserOption(o => o.setName('user').setDescription('User to check')),
   new SlashCommandBuilder().setName('clear').setDescription('Delete messages in bulk')
     .addIntegerOption(o => o.setName('amount').setDescription('Number of messages (1-100)').setRequired(true).setMinValue(1).setMaxValue(100)),
+  new SlashCommandBuilder().setName('purge').setDescription('Delete messages from a specific user')
+    .addUserOption(o => o.setName('user').setDescription('User whose messages to delete').setRequired(true))
+    .addIntegerOption(o => o.setName('amount').setDescription('Number of messages to scan (max 100)').setRequired(true).setMinValue(1).setMaxValue(100)),
   new SlashCommandBuilder().setName('ticket').setDescription('Open a support ticket'),
   new SlashCommandBuilder().setName('close').setDescription('Close a support ticket (mods only)'),
   new SlashCommandBuilder().setName('rules').setDescription('Show server rules'),
@@ -142,12 +145,14 @@ async function getMutedRole(guild) {
       color: '#818386',
       reason: 'Auto-created muted role',
     });
-    // Deny Send Messages in all text channels, allow voice
+    // Deny Send Messages in all text and voice channels
     for (const channel of guild.channels.cache.values()) {
-      if (channel.type === ChannelType.GuildText) {
+      if (channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildVoice) {
         await channel.permissionOverwrites.create(role, {
           SendMessages: false,
+          SendMessagesInThreads: false,
           AddReactions: false,
+          Speak: false,
         }).catch(() => {});
       }
     }
@@ -286,6 +291,18 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.channel.bulkDelete(amount, true);
       interaction.editReply(`✅ Deleted ${amount} message(s).`);
       setTimeout(() => interaction.deleteReply().catch(() => {}), 3000);
+
+    } else if (commandName === 'purge') {
+      if (!isMod) return interaction.editReply('❌ No permission.');
+      const target = interaction.options.getMember('user');
+      const amount = interaction.options.getInteger('amount');
+      const messages = await interaction.channel.messages.fetch({ limit: amount });
+      const userMessages = messages.filter(m => m.author.id === target.user.id);
+      if (userMessages.size === 0) return interaction.editReply(`❌ No messages found from **${target.user.tag}** in the last ${amount} messages.`);
+      await interaction.channel.bulkDelete(userMessages, true).catch(() => {});
+      interaction.editReply(`✅ Deleted **${userMessages.size}** message(s) from **${target.user.tag}**.`);
+      setTimeout(() => interaction.deleteReply().catch(() => {}), 4000);
+      logAction(guild, '🗑️ PURGE', target.user, interaction.user, `Deleted ${userMessages.size} messages`);
 
     } else if (commandName === 'ticket') {
       await handleTicketCreate(interaction);
