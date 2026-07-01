@@ -77,6 +77,16 @@ const commands = [
   new SlashCommandBuilder().setName('rules').setDescription('Show server rules'),
   new SlashCommandBuilder().setName('socials').setDescription('Show social media links'),
   new SlashCommandBuilder().setName('help').setDescription('Show all commands'),
+
+  new SlashCommandBuilder().setName('announce').setDescription('Send a rich formatted announcement embed')
+    .addStringOption(o => o.setName('title').setDescription('Title of the announcement').setRequired(true))
+    .addStringOption(o => o.setName('description').setDescription('Main text (use \\n for new lines)').setRequired(true))
+    .addChannelOption(o => o.setName('channel').setDescription('Channel to send to (defaults to current)').setRequired(false))
+    .addStringOption(o => o.setName('color').setDescription('Embed color (hex, e.g. #ff0000)').setRequired(false))
+    .addStringOption(o => o.setName('image').setDescription('Image URL to attach').setRequired(false))
+    .addStringOption(o => o.setName('thumbnail').setDescription('Small thumbnail image URL (top right)').setRequired(false))
+    .addStringOption(o => o.setName('footer').setDescription('Footer text').setRequired(false))
+    .addStringOption(o => o.setName('fields').setDescription('Extra fields: "Name|Value, Name2|Value2"').setRequired(false)),
 ];
 
 // ─── REGISTER COMMANDS ───────────────────────────────────────────────────────
@@ -316,6 +326,38 @@ client.on('interactionCreate', async (interaction) => {
     } else if (commandName === 'socials') {
       interaction.editReply(config.customCommands['socials']);
 
+    } else if (commandName === 'announce') {
+      if (!isMod) return interaction.editReply('❌ No permission.');
+      const title = interaction.options.getString('title');
+      const description = interaction.options.getString('description').replace(/\n/g, '
+');
+      const channel = interaction.options.getChannel('channel') || interaction.channel;
+      const color = interaction.options.getString('color') || '#5865F2';
+      const image = interaction.options.getString('image');
+      const thumbnail = interaction.options.getString('thumbnail');
+      const footer = interaction.options.getString('footer');
+      const fieldsRaw = interaction.options.getString('fields');
+
+      const embed = new EmbedBuilder()
+        .setTitle(title)
+        .setDescription(description)
+        .setColor(color)
+        .setTimestamp();
+
+      if (image) embed.setImage(image);
+      if (thumbnail) embed.setThumbnail(thumbnail);
+      if (footer) embed.setFooter({ text: footer });
+      if (fieldsRaw) {
+        const fields = fieldsRaw.split(',').map(f => {
+          const [name, value] = f.split('|');
+          return { name: name?.trim() || '​', value: value?.trim() || '​', inline: true };
+        });
+        embed.addFields(fields);
+      }
+
+      await channel.send({ embeds: [embed] });
+      interaction.editReply(`✅ Announcement sent to ${channel}!`);
+
     } else if (commandName === 'help') {
       const embed = new EmbedBuilder()
         .setColor('#5865F2')
@@ -324,6 +366,7 @@ client.on('interactionCreate', async (interaction) => {
           { name: '🔨 Moderation', value: '`/kick` `/ban` `/unban` `/mute` `/unmute` `/warn` `/warnings` `/clear`' },
           { name: '🎫 Tickets', value: '`/ticket` — Open a ticket\n`/close` — Close a ticket (mods only)' },
           { name: '⚡ Custom', value: '`/rules` `/socials`' },
+        { name: '📢 Announcements', value: '`/announce` — Send a rich embed with title, description, image, color, fields' },
         )
         .setFooter({ text: 'Type / to see all commands with their options!' });
       interaction.editReply({ embeds: [embed] });
