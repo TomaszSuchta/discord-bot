@@ -329,8 +329,7 @@ client.on('interactionCreate', async (interaction) => {
     } else if (commandName === 'announce') {
       if (!isMod) return interaction.editReply('❌ No permission.');
       const title = interaction.options.getString('title');
-      const description = interaction.options.getString('description').replace(/\n/g, '
-');
+      const description = interaction.options.getString('description').split('\\n').join('\n');
       const channel = interaction.options.getChannel('channel') || interaction.channel;
       const color = interaction.options.getString('color') || '#5865F2';
       const image = interaction.options.getString('image');
