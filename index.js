@@ -26,18 +26,59 @@ http.createServer(async (req, res) => {
         const channel = guild.channels.cache.find(c => c.name === data.channel && c.type === 0);
         if (!channel) { res.writeHead(404); return res.end(JSON.stringify({ error: 'Channel not found' })); }
 
-        const { EmbedBuilder } = require('discord.js');
-        const embed = new EmbedBuilder()
-          .setTitle(data.title || null)
-          .setDescription(data.description || null)
-          .setColor(data.color || '#5865F2')
-          .setTimestamp();
-        if (data.image) embed.setImage(data.image);
-        if (data.thumbnail) embed.setThumbnail(data.thumbnail);
-        if (data.footer) embed.setFooter({ text: data.footer });
-        if (data.fields && data.fields.length > 0) embed.addFields(data.fields);
+        const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
+        const mode = data.mode || 'embed';
 
-        await channel.send({ embeds: [embed] });
+        if (mode === 'imageOnly') {
+          if (data.image && data.image.startsWith('data:')) {
+            const base64 = data.image.split(',')[1];
+            const buf = Buffer.from(base64, 'base64');
+            const att = new AttachmentBuilder(buf, { name: 'image.png' });
+            await channel.send({ files: [att] });
+          } else if (data.image) {
+            await channel.send({ content: data.image });
+          }
+        } else if (mode === 'imageTop') {
+          // Send image first, then embed
+          if (data.image) {
+            if (data.image.startsWith('data:')) {
+              const base64 = data.image.split(',')[1];
+              const buf = Buffer.from(base64, 'base64');
+              const att = new AttachmentBuilder(buf, { name: 'image.png' });
+              await channel.send({ files: [att] });
+            } else {
+              await channel.send({ content: data.image });
+            }
+          }
+          const embed = new EmbedBuilder()
+            .setColor(data.color || '#5865F2')
+            .setTimestamp();
+          if (data.title) embed.setTitle(data.title);
+          if (data.description) embed.setDescription(data.description);
+          if (data.thumbnail) embed.setThumbnail(data.thumbnail);
+          if (data.footer) embed.setFooter({ text: data.footer });
+          if (data.fields && data.fields.length > 0) embed.addFields(data.fields);
+          await channel.send({ embeds: [embed] });
+        } else {
+          const embed = new EmbedBuilder()
+            .setColor(data.color || '#5865F2')
+            .setTimestamp();
+          if (data.title) embed.setTitle(data.title);
+          if (data.description) embed.setDescription(data.description);
+          if (data.thumbnail) embed.setThumbnail(data.thumbnail);
+          if (data.footer) embed.setFooter({ text: data.footer });
+          if (data.fields && data.fields.length > 0) embed.addFields(data.fields);
+          if (data.image && !data.image.startsWith('data:')) embed.setImage(data.image);
+          if (data.image && data.image.startsWith('data:')) {
+            const base64 = data.image.split(',')[1];
+            const buf = Buffer.from(base64, 'base64');
+            const att = new AttachmentBuilder(buf, { name: 'image.png' });
+            embed.setImage('attachment://image.png');
+            await channel.send({ embeds: [embed], files: [att] });
+          } else {
+            await channel.send({ embeds: [embed] });
+          }
+        }
         res.writeHead(200);
         res.end(JSON.stringify({ success: true }));
       } catch (err) {
