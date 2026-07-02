@@ -37,12 +37,13 @@ http.createServer(async (req, res) => {
       antiSpam: config.antiSpam,
       warnThresholds: config.warnThresholds,
       introSystem: config.introSystem,
+      welcomeMessage: config.welcomeMessage,
     }, roles }));
   }
 
   if (req.method === 'POST' && req.url === '/config') {
     const data = await parseBody();
-    const allowed = ['welcomeChannelName','logChannelName','autoRole','badWords','permissions','memberCounterChannelName','joinDM','antiSpam','warnThresholds','introSystem'];
+    const allowed = ['welcomeChannelName','logChannelName','autoRole','badWords','permissions','memberCounterChannelName','joinDM','antiSpam','warnThresholds','introSystem','welcomeMessage'];
     allowed.forEach(k => { if (data[k] !== undefined) config[k] = data[k]; });
     saveConfig();
     res.writeHead(200); return res.end(JSON.stringify({ success: true }));
@@ -161,6 +162,14 @@ const defaultConfig = {
   customCommands: {
     'rules': 'Follow the server rules or you will be banned!',
     'socials': 'Instagram: @yourhandle | YouTube: @yourchannel',
+  },
+  welcomeMessage: {
+    enabled: true,
+    title: '👋 Welcome to {server}!',
+    description: "Hey {mention}, glad to have you here!\nMake sure to read the rules and enjoy your stay.",
+    color: '#5865F2',
+    image: '',
+    thumbnail: 'avatar',
   },
   joinDM: {
     enabled: false,
