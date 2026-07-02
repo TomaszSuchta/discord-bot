@@ -38,13 +38,17 @@ http.createServer(async (req, res) => {
       warnThresholds: config.warnThresholds,
       introSystem: config.introSystem,
       welcomeMessage: config.welcomeMessage,
+      customCommands: config.customCommands,
     }, roles }));
   }
 
   if (req.method === 'POST' && req.url === '/config') {
     const data = await parseBody();
-    const allowed = ['welcomeChannelName','logChannelName','autoRole','badWords','permissions','memberCounterChannelName','joinDM','antiSpam','warnThresholds','introSystem','welcomeMessage'];
-    allowed.forEach(k => { if (data[k] !== undefined) config[k] = data[k]; });
+    // Accept ALL config keys from dashboard
+    for (const key of Object.keys(data)) {
+      config[key] = data[key];
+    }
+    console.log('Config updated, keys:', Object.keys(data).join(', '));
     saveConfig();
     res.writeHead(200); return res.end(JSON.stringify({ success: true }));
   }
@@ -140,7 +144,11 @@ const client = new Client({
   ],
 });
 
-// ─── PERSISTENCE ─────────────────────────────────────────────────────────────
+// ─── RAILWAY VARIABLE PERSISTENCE ────────────────────────────────────────────
+const RAILWAY_TOKEN = process.env.RAILWAY_TOKEN;
+const RAILWAY_PROJECT_ID = '3dde9cb1-bb09-46a9-91eb-749594f02491';
+const RAILWAY_SERVICE_ID = 'bf515c8a-d81c-4916-bfb7-dead67629b48';
+const RAILWAY_ENVIRONMENT_ID = 'ad44aaba-4af0-4454-8cab-8ac4902173a7';
 const DATA_DIR = './data';
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
@@ -148,7 +156,64 @@ function loadJSON(file, fallback) {
   try { return JSON.parse(fs.readFileSync(`${DATA_DIR}/${file}`, 'utf8')); } catch { return fallback; }
 }
 function saveJSON(file, data) {
-  fs.writeFileSync(`${DATA_DIR}/${file}`, JSON.stringify(data, null, 2));
+  try { fs.writeFileSync(`${DATA_DIR}/${file}`, JSON.stringify(data, null, 2)); } catch {}
+}
+
+async function railwayGraphQL(query, variables) {
+  const res = await fetch('https://backboard.railway.app/graphql/v2', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${RAILWAY_TOKEN}` },
+    body: JSON.stringify({ query, variables })
+  });
+  return res.json();
+}
+
+async function loadConfigFromCloud() {
+  if (!RAILWAY_TOKEN) { console.log('⚠️ No RAILWAY_TOKEN set'); return null; }
+  try {
+    const data = await railwayGraphQL(`
+      query($projectId: String!, $serviceId: String!, $environmentId: String!) {
+        variables(projectId: $projectId, serviceId: $serviceId, environmentId: $environmentId)
+      }
+    `, { projectId: RAILWAY_PROJECT_ID, serviceId: RAILWAY_SERVICE_ID, environmentId: RAILWAY_ENVIRONMENT_ID });
+    const vars = data?.data?.variables;
+    console.log('Railway vars keys:', vars ? Object.keys(vars).join(', ') : 'null');
+    if (vars?.BOT_CONFIG) {
+      const parsed = JSON.parse(vars.BOT_CONFIG);
+      console.log('✅ Config loaded from Railway Variables, keys:', Object.keys(parsed).join(', '));
+      return parsed;
+    }
+    console.log('⚠️ No BOT_CONFIG variable found yet');
+  } catch (err) { console.error('Railway load error:', err.message); }
+  return null;
+}
+
+async function saveConfigToCloud(configData) {
+  if (!RAILWAY_TOKEN) return;
+  try {
+    const result = await railwayGraphQL(`
+      mutation($projectId: String!, $serviceId: String!, $environmentId: String!, $name: String!, $value: String!) {
+        variableUpsert(input: {
+          projectId: $projectId,
+          serviceId: $serviceId,
+          environmentId: $environmentId,
+          name: $name,
+          value: $value
+        })
+      }
+    `, {
+      projectId: RAILWAY_PROJECT_ID,
+      serviceId: RAILWAY_SERVICE_ID,
+      environmentId: RAILWAY_ENVIRONMENT_ID,
+      name: 'BOT_CONFIG',
+      value: JSON.stringify(configData)
+    });
+    if (result.errors) {
+      console.error('Railway save error:', JSON.stringify(result.errors));
+    } else {
+      console.log('✅ Config saved to Railway Variables');
+    }
+  } catch (err) { console.error('Railway save error:', err.message); }
 }
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
@@ -162,14 +227,6 @@ const defaultConfig = {
   customCommands: {
     'rules': 'Follow the server rules or you will be banned!',
     'socials': 'Instagram: @yourhandle | YouTube: @yourchannel',
-  },
-  welcomeMessage: {
-    enabled: true,
-    title: '👋 Welcome to {server}!',
-    description: "Hey {mention}, glad to have you here!\nMake sure to read the rules and enjoy your stay.",
-    color: '#5865F2',
-    image: '',
-    thumbnail: 'avatar',
   },
   joinDM: {
     enabled: false,
@@ -193,13 +250,21 @@ const defaultConfig = {
     muteDuration: 60,
     banAt: 5,
   },
+  welcomeMessage: {
+    enabled: true,
+    title: '👋 Welcome to {server}!',
+    description: 'Hey {mention}, glad to have you here!\\nMake sure to read the rules and enjoy your stay.',
+    color: '#5865F2',
+    image: '',
+    thumbnail: 'avatar',
+  },
   introSystem: {
     enabled: false,
     channelId: '',
     channelName: '',
     minWords: 15,
-    successMsg: 'Welcome {mention} 🦅 check your DMs I just sent you a gift',
-    shortMsg: "That's too short, I still don't know shit about you 😤. Try again",
+    successMsg: 'Welcome {mention} check your DMs I just sent you a gift',
+    shortMsg: 'That is too short! Try again.',
     dmTitle: '',
     dmDesc: '',
     dmLink: '',
@@ -220,14 +285,16 @@ const defaultConfig = {
 };
 
 const config = { ...defaultConfig, ...loadJSON('config.json', {}) };
-function saveConfig() { saveJSON('config.json', config); }
+// Keep reference to defaults for filling missing keys after cloud load
+function saveConfig() {
+  saveJSON('config.json', config);
+  saveConfigToCloud(config);
+}
 
 // ─── PERSISTENT DATA ──────────────────────────────────────────────────────────
 let warnings = loadJSON('warnings.json', {});
 let reactionRoles = loadJSON('reaction-roles.json', {});
 const spamTracker = {};
-const introCompleted = loadJSON('intro-completed.json', {});
-function saveIntroCompleted() { saveJSON('intro-completed.json', introCompleted); }
 
 function saveWarnings() { saveJSON('warnings.json', warnings); }
 function saveReactionRoles() { saveJSON('reaction-roles.json', reactionRoles); }
@@ -355,6 +422,26 @@ async function addWarning(member, reason, guild, moderator) {
 client.once('clientReady', async () => {
   console.log(`✅ Bot is online as ${client.user.tag}`);
   client.user.setActivity('Moderating the server', { type: 3 });
+
+  // Load config from cloud (overwrites defaults with saved settings)
+  const cloudConfig = await loadConfigFromCloud();
+  if (cloudConfig) {
+    // Merge cloud into config — cloud wins, but defaults fill missing keys
+    for (const key of Object.keys(cloudConfig)) {
+      config[key] = cloudConfig[key];
+    }
+    // Fill any keys that exist in defaults but not in old saved config
+    for (const key of Object.keys(defaultConfig)) {
+      if (config[key] === undefined) {
+        config[key] = defaultConfig[key];
+        console.log(`✅ Added missing key from defaults: ${key}`);
+      }
+    }
+    console.log('✅ Config restored from cloud, welcomeMessage:', JSON.stringify(config.welcomeMessage));
+  } else {
+    console.log('⚠️ No cloud config found, using defaults');
+  }
+
   for (const guild of client.guilds.cache.values()) {
     await registerCommands(client.user.id, guild.id);
     await updateMemberCount(guild);
@@ -366,8 +453,10 @@ client.on('guildMemberAdd', async (member) => {
   console.log(`Member joined: ${member.user.tag}`);
   await updateMemberCount(member.guild);
 
-  const role = member.guild.roles.cache.find(r => r.name === config.autoRole);
-  if (role) await member.roles.add(role).catch(err => console.error('Role assign error:', err));
+  if (config.autoRole) {
+    const role = member.guild.roles.cache.find(r => r.name === config.autoRole);
+    if (role) await member.roles.add(role).catch(err => console.error('Role assign error:', err));
+  }
 
   // Welcome channel embed
   const welcomeChannel = member.guild.channels.cache.find(ch => ch.name === config.welcomeChannelName);
@@ -382,43 +471,8 @@ client.on('guildMemberAdd', async (member) => {
   }
 
   // Join DM
-  if (config.joinDM?.enabled) {
-    try {
-      const dm = config.joinDM;
-      const username = member.user.username;
-      const replaceUser = (str) => str ? str.replace(/\{user\}/g, username) : str;
-
-      if (dm.title || dm.description) {
-        const embed = new EmbedBuilder().setColor(dm.color || '#5865F2');
-        if (dm.title) embed.setTitle(replaceUser(dm.title));
-        if (dm.description) embed.setDescription(replaceUser(dm.description));
-        if (dm.thumbnail) embed.setThumbnail(dm.thumbnail);
-        if (dm.footer) embed.setFooter({ text: dm.footer });
-        if (dm.image && !dm.image.startsWith('data:')) embed.setImage(dm.image);
-
-        const msgPayload = { embeds: [embed] };
-
-        // Button as a component row
-        if (dm.btnLabel && dm.btnUrl) {
-          const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-          const btn = new ButtonBuilder().setLabel(dm.btnLabel).setURL(dm.btnUrl).setStyle(ButtonStyle.Link);
-          msgPayload.components = [new ActionRowBuilder().addComponents(btn)];
-        }
-
-        // Handle uploaded base64 image
-        if (dm.image?.startsWith('data:')) {
-          const buf = Buffer.from(dm.image.split(',')[1], 'base64');
-          embed.setImage('attachment://dm-image.png');
-          msgPayload.files = [new AttachmentBuilder(buf, { name: 'dm-image.png' })];
-        }
-
-        await member.send(msgPayload).catch(() => {});
-      } else if (dm.message) {
-        await member.send(replaceUser(dm.message)).catch(() => {});
-      }
-    } catch (err) {
-      console.error('Join DM error:', err);
-    }
+  if (config.joinDM?.enabled && config.joinDM?.message) {
+    await member.send(config.joinDM.message).catch(() => {});
   }
 
   // Mod log
@@ -442,43 +496,6 @@ client.on('messageCreate', async (message) => {
     const warn = await message.channel.send(`⚠️ ${message.author}, that language isn't allowed here.`);
     setTimeout(() => warn.delete().catch(() => {}), 5000);
     return;
-  }
-
-  // Intro system
-  if (config.introSystem?.enabled && config.introSystem?.channelId) {
-    if (message.channel.id === config.introSystem.channelId && !introCompleted[message.author.id]) {
-      const wordCount = message.content.trim().split(/\s+/).length;
-      const { successMsg, shortMsg, minWords, dmTitle, dmDesc, dmLink, color, dmImage } = config.introSystem;
-      if (wordCount >= (minWords || 15)) {
-        // Mark as completed
-        introCompleted[message.author.id] = true;
-        saveIntroCompleted();
-        // Reply in channel
-        const reply = successMsg.replace('{mention}', `<@${message.author.id}>`);
-        await message.reply(reply).catch(() => {});
-        // Send DM with resource
-        try {
-          if (dmTitle || dmDesc) {
-            const embed = new EmbedBuilder().setColor(color || '#5865F2');
-            if (dmTitle) embed.setTitle(dmTitle);
-            if (dmDesc) embed.setDescription(dmDesc);
-            if (dmImage) embed.setImage(dmImage);
-            const payload = { embeds: [embed] };
-            if (dmLink) {
-              const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-              const btn = new ButtonBuilder().setLabel('View Resource →').setURL(dmLink).setStyle(ButtonStyle.Link);
-              payload.components = [new ActionRowBuilder().addComponents(btn)];
-            }
-            await message.author.send(payload).catch(() => {});
-          } else if (dmLink) {
-            await message.author.send(dmLink).catch(() => {});
-          }
-        } catch (err) { console.error('Intro DM error:', err); }
-      } else {
-        await message.reply(shortMsg || "That's too short! Try again.").catch(() => {});
-      }
-      return;
-    }
   }
 
   // Anti-spam
