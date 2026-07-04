@@ -68,7 +68,6 @@ http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && req.url === '/reaction-roles') {
     const data = await parseBody();
-    // data: { channelId, messageId, emoji, roleId, roleName }
     const guild = client.guilds.cache.first();
     if (!guild) { res.writeHead(500); return res.end(JSON.stringify({ error: 'Not in server' })); }
     try {
@@ -130,6 +129,30 @@ http.createServer(async (req, res) => {
       res.writeHead(200); res.end(JSON.stringify({ success: true }));
     } catch(err) { res.writeHead(500); res.end(JSON.stringify({ error: err.message })); }
     return;
+  }
+
+  // ── NEW FEATURE: /warnings-data endpoint for the dashboard Mod Log Viewer ──
+  if (req.method === 'GET' && req.url === '/warnings-data') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(warnings));
+  }
+
+
+  // Previously the dashboard had no way to see live server stats.
+  if (req.method === 'GET' && req.url === '/stats') {
+    const guild = client.guilds.cache.first();
+    if (!guild) { res.writeHead(500); return res.end(JSON.stringify({ error: 'Not in server' })); }
+    await guild.members.fetch().catch(() => {});
+    const totalWarnings = Object.values(warnings).reduce((sum, w) => sum + w.length, 0);
+    const bannedCount = (await guild.bans.fetch().catch(() => ({ size: 0 }))).size;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({
+      memberCount: guild.memberCount,
+      totalWarnings,
+      bannedCount,
+      reactionRoleCount: Object.keys(reactionRoles).length,
+      botTag: client.user?.tag,
+    }));
   }
 
   res.writeHead(200); res.end('Bot is running!');
@@ -231,7 +254,7 @@ const defaultConfig = {
   joinDM: {
     enabled: false,
     title: '',
-    description: '',
+    description: '',  // <── BUG FIX #2: this is the correct field name (not .message)
     color: '#5865F2',
     image: '',
     thumbnail: '',
@@ -250,10 +273,13 @@ const defaultConfig = {
     muteDuration: 60,
     banAt: 5,
   },
+  // BUG FIX #3: the description used '\\n' (literal backslash-n) in the old code.
+  // That rendered as the text "\n" in Discord instead of a real line break.
+  // Using a real newline character here fixes it.
   welcomeMessage: {
     enabled: true,
     title: '👋 Welcome to {server}!',
-    description: 'Hey {mention}, glad to have you here!\\nMake sure to read the rules and enjoy your stay.',
+    description: 'Hey {mention}, glad to have you here!\nMake sure to read the rules and enjoy your stay.',
     color: '#5865F2',
     image: '',
     thumbnail: 'avatar',
@@ -285,10 +311,9 @@ const defaultConfig = {
 };
 
 const config = { ...defaultConfig, ...loadJSON('config.json', {}) };
-// Keep reference to defaults for filling missing keys after cloud load
 function saveConfig() {
   saveJSON('config.json', config);
-  saveConfigToCloud(config);
+  saveConfigToCloud(config); // fire-and-forget; errors logged inside the function
 }
 
 // ─── PERSISTENT DATA ──────────────────────────────────────────────────────────
@@ -418,26 +443,52 @@ async function addWarning(member, reason, guild, moderator) {
   return count;
 }
 
+// ─── BUILD WELCOME EMBED ─────────────────────────────────────────────────────
+// BUG FIX #4: The old guildMemberAdd handler completely ignored config.welcomeMessage.
+// It always sent a hardcoded embed. This function reads the actual saved config.
+function buildWelcomeEmbed(member) {
+  const wm = config.welcomeMessage;
+  // Replace placeholders: {mention}, {user}, {server}, {count}
+  const replacePlaceholders = (text) => (text || '')
+    .replace(/\{mention\}/g, `<@${member.user.id}>`)
+    .replace(/\{user\}/g, member.user.username)
+    .replace(/\{server\}/g, member.guild.name)
+    .replace(/\{count\}/g, String(member.guild.memberCount));
+
+  const embed = new EmbedBuilder()
+    .setColor(wm.color || '#5865F2')
+    .setTitle(replacePlaceholders(wm.title || '👋 Welcome to {server}!'))
+    .setDescription(replacePlaceholders(wm.description || 'Hey {mention}, glad to have you here!\nEnjoy your stay.'))
+    .setFooter({ text: `Member #${member.guild.memberCount}` });
+
+  // Thumbnail: 'avatar' = member's avatar, a URL = custom image, '' = none
+  if (wm.thumbnail === 'avatar') {
+    embed.setThumbnail(member.user.displayAvatarURL({ dynamic: true }));
+  } else if (wm.thumbnail) {
+    embed.setThumbnail(wm.thumbnail);
+  }
+
+  if (wm.image) embed.setImage(wm.image);
+  return embed;
+}
+
 // ─── READY ───────────────────────────────────────────────────────────────────
 client.once('clientReady', async () => {
   console.log(`✅ Bot is online as ${client.user.tag}`);
   client.user.setActivity('Moderating the server', { type: 3 });
 
-  // Load config from cloud (overwrites defaults with saved settings)
   const cloudConfig = await loadConfigFromCloud();
   if (cloudConfig) {
-    // Merge cloud into config — cloud wins, but defaults fill missing keys
     for (const key of Object.keys(cloudConfig)) {
       config[key] = cloudConfig[key];
     }
-    // Fill any keys that exist in defaults but not in old saved config
     for (const key of Object.keys(defaultConfig)) {
       if (config[key] === undefined) {
         config[key] = defaultConfig[key];
         console.log(`✅ Added missing key from defaults: ${key}`);
       }
     }
-    console.log('✅ Config restored from cloud, welcomeMessage:', JSON.stringify(config.welcomeMessage));
+    console.log('✅ Config restored from cloud');
   } else {
     console.log('⚠️ No cloud config found, using defaults');
   }
@@ -458,24 +509,43 @@ client.on('guildMemberAdd', async (member) => {
     if (role) await member.roles.add(role).catch(err => console.error('Role assign error:', err));
   }
 
-  // Welcome channel embed
-  const welcomeChannel = member.guild.channels.cache.find(ch => ch.name === config.welcomeChannelName);
-  if (welcomeChannel) {
-    const embed = new EmbedBuilder()
-      .setColor('#5865F2')
-      .setTitle(`👋 Welcome to ${member.guild.name}!`)
-      .setDescription(`Hey ${member}, glad to have you here!\nMake sure to read the rules and enjoy your stay.`)
-      .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
-      .setFooter({ text: `Member #${member.guild.memberCount}` });
-    welcomeChannel.send({ embeds: [embed] });
+  // ── BUG FIX #4 (continued): Now uses config.welcomeMessage instead of hardcoded embed ──
+  if (config.welcomeMessage?.enabled !== false) {
+    const welcomeChannel = member.guild.channels.cache.find(ch => ch.name === config.welcomeChannelName);
+    if (welcomeChannel) {
+      welcomeChannel.send({ embeds: [buildWelcomeEmbed(member)] }).catch(err => console.error('Welcome send error:', err));
+    }
   }
 
-  // Join DM
-  if (config.joinDM?.enabled && config.joinDM?.message) {
-    await member.send(config.joinDM.message).catch(() => {});
+  // ── BUG FIX #2: joinDM used config.joinDM.message which never existed. ──
+  // The dashboard stores the content as title + description + color + image + etc.
+  // We now build the embed from those fields instead.
+  if (config.joinDM?.enabled) {
+    const dm = config.joinDM;
+    // Only send if there's actual content configured
+    if (dm.title || dm.description) {
+      const embed = new EmbedBuilder().setColor(dm.color || '#5865F2');
+      if (dm.title) embed.setTitle(dm.title);
+      if (dm.description) embed.setDescription(dm.description.replace(/\{user\}/g, member.user.username));
+      if (dm.thumbnail) embed.setThumbnail(dm.thumbnail);
+      if (dm.footer) embed.setFooter({ text: dm.footer });
+      // Image must be a URL (base64 images can't be sent in embeds via DM)
+      if (dm.image && dm.image.startsWith('http')) embed.setImage(dm.image);
+
+      const sendOptions = { embeds: [embed] };
+      // If a button was configured, we can't add buttons to DMs via embeds alone —
+      // but we can append the link as plain text below the embed.
+      const components = [];
+      if (dm.btnLabel && dm.btnUrl) {
+        // Send link as a separate line since buttons require component rows
+        await member.send(sendOptions).catch(() => {});
+        await member.send(`[${dm.btnLabel}](${dm.btnUrl})`).catch(() => {});
+      } else {
+        await member.send(sendOptions).catch(() => {});
+      }
+    }
   }
 
-  // Mod log
   logAction(member.guild, '📥 MEMBER JOINED', member.user, null, null, '#57f287');
 });
 
@@ -485,9 +555,48 @@ client.on('guildMemberRemove', async (member) => {
   logAction(member.guild, '📤 MEMBER LEFT', member.user, null, null, '#ed4245');
 });
 
-// ─── ANTI-SPAM + AUTO-MOD ─────────────────────────────────────────────────────
+// ─── ANTI-SPAM + AUTO-MOD + INTRO SYSTEM ─────────────────────────────────────
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
+
+  // ── BUG FIX #5: Intro system was configured in the dashboard but never ──────
+  // implemented in the bot. This is the complete implementation.
+  const intro = config.introSystem;
+  if (intro?.enabled && intro?.channelId && message.channel.id === intro.channelId) {
+    const wordCount = message.content.trim().split(/\s+/).filter(Boolean).length;
+    const minWords = intro.minWords || 15;
+
+    if (wordCount < minWords) {
+      // Too short — reply in channel then done (don't auto-mod this channel)
+      const shortReply = (intro.shortMsg || 'That is too short! Try again.')
+        .replace(/\{mention\}/g, `<@${message.author.id}>`);
+      await message.reply(shortReply).catch(() => {});
+    } else {
+      // Valid intro — reply in channel
+      const successReply = (intro.successMsg || 'Welcome {mention}!')
+        .replace(/\{mention\}/g, `<@${message.author.id}>`);
+      await message.reply(successReply).catch(() => {});
+
+      // Send resource DM if configured
+      if (intro.dmTitle || intro.dmDesc) {
+        const embed = new EmbedBuilder().setColor(intro.color || '#5865F2');
+        if (intro.dmTitle) embed.setTitle(intro.dmTitle);
+        if (intro.dmDesc) embed.setDescription(intro.dmDesc);
+        if (intro.dmImage && intro.dmImage.startsWith('http')) embed.setImage(intro.dmImage);
+
+        await message.author.send({ embeds: [embed] }).catch(() => {
+          console.log(`Could not DM ${message.author.tag} — they may have DMs off`);
+        });
+
+        // Send resource link as separate message if configured
+        if (intro.dmLink) {
+          await message.author.send(intro.dmLink).catch(() => {});
+        }
+      }
+    }
+    // Skip the rest of messageCreate for intro channel messages
+    return;
+  }
 
   // Bad word filter
   const lower = message.content.toLowerCase();
@@ -521,23 +630,36 @@ client.on('messageCreate', async (message) => {
 });
 
 // ─── REACTION ROLES ───────────────────────────────────────────────────────────
+// BUG FIX #6: Discord sometimes sends "partial" reaction objects for messages
+// that aren't in the bot's cache (e.g. messages sent before the bot started).
+// Calling reaction.fetch() fills in the missing data before we try to use it.
 client.on('messageReactionAdd', async (reaction, user) => {
   if (user.bot) return;
+  // Fetch partial reactions/messages to avoid crashes on old messages
+  if (reaction.partial) {
+    try { await reaction.fetch(); } catch { return; }
+  }
   const key = `${reaction.message.id}-${reaction.emoji.name}`;
   const rr = reactionRoles[key];
   if (!rr) return;
   const guild = reaction.message.guild;
-  const member = guild.members.cache.get(user.id);
+  if (!guild) return;
+  // Fetch member in case they aren't cached
+  const member = await guild.members.fetch(user.id).catch(() => null);
   if (member) await member.roles.add(rr.roleId).catch(() => {});
 });
 
 client.on('messageReactionRemove', async (reaction, user) => {
   if (user.bot) return;
+  if (reaction.partial) {
+    try { await reaction.fetch(); } catch { return; }
+  }
   const key = `${reaction.message.id}-${reaction.emoji.name}`;
   const rr = reactionRoles[key];
   if (!rr) return;
   const guild = reaction.message.guild;
-  const member = guild.members.cache.get(user.id);
+  if (!guild) return;
+  const member = await guild.members.fetch(user.id).catch(() => null);
   if (member) await member.roles.remove(rr.roleId).catch(() => {});
 });
 
