@@ -169,9 +169,9 @@ const client = new Client({
 
 // ─── RAILWAY VARIABLE PERSISTENCE ────────────────────────────────────────────
 const RAILWAY_TOKEN = process.env.RAILWAY_TOKEN;
-const RAILWAY_PROJECT_ID = '3dde9cb1-bb09-46a9-91eb-749594f02491';
-const RAILWAY_SERVICE_ID = 'bf515c8a-d81c-4916-bfb7-dead67629b48';
-const RAILWAY_ENVIRONMENT_ID = 'ad44aaba-4af0-4454-8cab-8ac4902173a7';
+const RAILWAY_PROJECT_ID = process.env.RAILWAY_PROJECT_ID;
+const RAILWAY_SERVICE_ID = process.env.RAILWAY_SERVICE_ID;
+const RAILWAY_ENVIRONMENT_ID = process.env.RAILWAY_ENVIRONMENT_ID;
 const DATA_DIR = './data';
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
