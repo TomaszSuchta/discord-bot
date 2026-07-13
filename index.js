@@ -4,7 +4,7 @@ process.on('uncaughtException', (err) => console.error('Uncaught exception:', er
 const {
   Client, GatewayIntentBits, EmbedBuilder, PermissionFlagsBits,
   ChannelType, REST, Routes, SlashCommandBuilder, AttachmentBuilder,
-  ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle,
+  ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, MessageFlags,
   Partials,
 } = require('discord.js');
 const fs = require('fs');
@@ -896,7 +896,7 @@ client.on('interactionCreate', async (interaction) => {
     const selectedValue = interaction.values[0];
     const tp = config.ticketPanel;
     const ticketType = (tp?.ticketTypes || []).find(t => t.value === selectedValue);
-    if (!ticketType) return interaction.reply({ content: '❌ Unknown ticket type.', ephemeral: true });
+    if (!ticketType) return interaction.reply({ content: '❌ Unknown ticket type.', flags: MessageFlags.Ephemeral });
 
     const guild = interaction.guild;
     const member = interaction.member;
@@ -906,7 +906,7 @@ client.on('interactionCreate', async (interaction) => {
     // Check for existing open ticket of the same type
     const existing = guild.channels.cache.find(c => c.name === channelName);
     if (existing) {
-      return interaction.reply({ content: `❌ You already have an open ticket: ${existing}. Use \`/close\` inside it to close it.`, ephemeral: true });
+      return interaction.reply({ content: `❌ You already have an open ticket: ${existing}. Use \`/close\` inside it to close it.`, flags: MessageFlags.Ephemeral });
     }
 
     // Find or create the Tickets category
@@ -924,7 +924,7 @@ client.on('interactionCreate', async (interaction) => {
     }).catch(err => { console.error('Ticket channel create error:', err); return null; });
 
     if (!ticketChannel) {
-      return interaction.reply({ content: '❌ Failed to create ticket channel. Make sure the bot has Manage Channels permission.', ephemeral: true });
+      return interaction.reply({ content: '❌ Failed to create ticket channel. Make sure the bot has Manage Channels permission.', flags: MessageFlags.Ephemeral });
     }
 
     // ── Build the welcome embed sent inside the new ticket channel ─────────────
@@ -971,7 +971,7 @@ client.on('interactionCreate', async (interaction) => {
     await ticketChannel.send({ content: openingMsg, embeds: [welcomeEmbed], components: [closeBtn] });
 
     // Confirm to user ephemerally (only they see this)
-    await interaction.reply({ content: `✅ Your ticket has been created: ${ticketChannel}`, ephemeral: true });
+    await interaction.reply({ content: `✅ Your ticket has been created: ${ticketChannel}`, flags: MessageFlags.Ephemeral });
     logAction(guild, `🎫 TICKET OPENED (${ticketType.label})`, member.user, member.user, `Opened via panel: ${channelName}`, '#9b59b6');
     return;
   }
@@ -979,10 +979,10 @@ client.on('interactionCreate', async (interaction) => {
   // ── Handle close button inside ticket channels ───────────────────────────────
   if (interaction.isButton() && interaction.customId === 'close_ticket') {
     if (!interaction.channel.topic?.match(/^\d{17,19}$/)) {
-      return interaction.reply({ content: '❌ This button only works inside a ticket channel.', ephemeral: true });
+      return interaction.reply({ content: '❌ This button only works inside a ticket channel.', flags: MessageFlags.Ephemeral });
     }
     if (!hasPermission(interaction.member, 'kick') && interaction.channel.topic !== interaction.user.id) {
-      return interaction.reply({ content: '❌ Only moderators can close tickets they did not open.', ephemeral: true });
+      return interaction.reply({ content: '❌ Only moderators can close tickets they did not open.', flags: MessageFlags.Ephemeral });
     }
     await interaction.reply('🔒 Ticket closing in 5 seconds...');
     logAction(interaction.guild, '🎫 TICKET CLOSED', interaction.user, interaction.user, 'Closed via button', '#ed4245');
