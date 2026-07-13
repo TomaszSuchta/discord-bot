@@ -803,74 +803,58 @@ async function postTicketPanel(channel, guild) {
     { type: 'image', url: tp.embed?.image || '' },
   ];
 
-  // ── HOW THIS WORKS ────────────────────────────────────────────────────────────
-  // Discord's message structure is: [embed body] → [components] → [embed image].
-  // The embed's .setImage() image renders BELOW the components (dropdown).
-  // So the correct layout for "text → divider → dropdown → image" is:
-  //   - Put text + dividers in the embed description
-  //   - Put the image in embed.setImage() — it renders at the very bottom of the embed
-  //   - Attach the dropdown as a component — it renders between text and the image
-  // This matches exactly the layout in the UnrealShop screenshot.
+  // ── TWO-MESSAGE LAYOUT ────────────────────────────────────────────────────────
+  // Discord ALWAYS renders components (dropdowns) below the entire embed — no exceptions.
+  // The only way to achieve: [text] → [dropdown] → [image] in chat is two messages:
+  //   Message 1: embed with text/dividers + dropdown component attached
+  //   Message 2: embed with just the image
+  // Sent back-to-back from the same bot, Discord groups them visually into one block.
   //
-  // For dividers: Discord renders a horizontal line between embed FIELDS (not description).
-  // So we split text blocks into separate fields, with invisible ​ fields as dividers.
+  // Block order from the dashboard determines layout:
+  //   Blocks BEFORE the dropdown → message 1 (above dropdown)
+  //   Blocks AFTER the dropdown  → message 2 (below dropdown, image-only embed)
 
-  const embed = new EmbedBuilder().setColor(tp.embed?.color || '#9b59b6');
-  if (tp.embed?.title)     embed.setTitle(tp.embed.title);
-  if (tp.embed?.thumbnail) embed.setThumbnail(tp.embed.thumbnail);
-  if (tp.embed?.footer)    embed.setFooter({ text: tp.embed.footer });
+  const dropdownIndex = blocks.findIndex(b => b.type === 'dropdown');
+  const splitAt = dropdownIndex === -1 ? blocks.length : dropdownIndex;
+  const blocksAbove = blocks.slice(0, splitAt);
+  const blocksBelow = blocks.slice(splitAt + 1);
 
-  // Walk blocks in order, building fields and tracking image position
-  let imageUrl = '';
-  let imageIsBase64 = false;
-  let pendingText = '';   // accumulate text until we hit a divider or end
+  // ── Message 1: text + dividers + dropdown ─────────────────────────────────────
+  const embedTop = new EmbedBuilder().setColor(tp.embed?.color || '#9b59b6');
+  if (tp.embed?.title)     embedTop.setTitle(tp.embed.title);
+  if (tp.embed?.thumbnail) embedTop.setThumbnail(tp.embed.thumbnail);
+  if (tp.embed?.footer)    embedTop.setFooter({ text: tp.embed.footer });
+
+  let pendingText = '';
+  let hasFields = false;
 
   const flushText = () => {
     if (pendingText.trim()) {
-      embed.addFields({ name: '​', value: pendingText.trim(), inline: false });
+      embedTop.addFields({ name: '\u200b', value: pendingText.trim(), inline: false });
       pendingText = '';
+      hasFields = true;
     }
   };
 
-  for (const block of blocks) {
+  for (const block of blocksAbove) {
     if (block.type === 'text' && block.content) {
-      // Accumulate — we flush when we hit a divider so each text section becomes a field
       pendingText += (pendingText ? '\n' : '') + block.content;
-
     } else if (block.type === 'divider') {
       flushText();
-      // An invisible field creates the horizontal rule Discord draws between fields
-      embed.addFields({ name: '​', value: '​', inline: false });
-
-    } else if (block.type === 'image' && block.url) {
-      imageUrl = block.url;
-      imageIsBase64 = block.url.startsWith('data:');
-      // Image goes into setImage() — Discord renders this BELOW components
-
-    } else if (block.type === 'dropdown') {
-      flushText(); // flush any pending text before dropdown position marker
-      // Dropdown is a component — rendered by Discord between embed fields and embed image.
-      // No action needed here; we build the component after the loop.
+      embedTop.addFields({ name: '\u200b', value: '\u200b', inline: false });
+      hasFields = true;
     }
   }
-  flushText(); // flush any remaining text
+  flushText();
 
-  // Attach image via setImage so it renders at the bottom (below dropdown)
-  const files = [];
-  if (imageUrl) {
-    if (imageIsBase64) {
-      const buf = Buffer.from(imageUrl.split(',')[1], 'base64');
-      files.push(new AttachmentBuilder(buf, { name: 'panel-image.png' }));
-      embed.setImage('attachment://panel-image.png');
-    } else {
-      embed.setImage(imageUrl);
-    }
+  // If no fields were added (e.g. only a title), set description instead so embed isn't blank
+  if (!hasFields && pendingText.trim()) {
+    embedTop.setDescription(pendingText.trim());
   }
 
-  // Build the select menu
   const menu = new StringSelectMenuBuilder()
     .setCustomId('ticket_type_select')
-    .setPlaceholder(tp.placeholder || '✖ | No option selected')
+    .setPlaceholder(tp.placeholder || '\u2716 | No option selected')
     .addOptions(types.map(t => ({
       label: t.label,
       description: t.description || '',
@@ -879,7 +863,32 @@ async function postTicketPanel(channel, guild) {
     })));
   const row = new ActionRowBuilder().addComponents(menu);
 
-  return channel.send({ embeds: [embed], components: [row], ...(files.length ? { files } : {}) });
+  await channel.send({ embeds: [embedTop], components: [row] });
+
+  // ── Message 2: image embed (only if image block exists below dropdown) ────────
+  const imageBlock = blocksBelow.find(b => b.type === 'image' && b.url);
+  if (imageBlock) {
+    const imageUrl = imageBlock.url;
+    const imageIsBase64 = imageUrl.startsWith('data:');
+    const embedImg = new EmbedBuilder().setColor(tp.embed?.color || '#9b59b6');
+
+    const files = [];
+    if (imageIsBase64) {
+      const buf = Buffer.from(imageUrl.split(',')[1], 'base64');
+      files.push(new AttachmentBuilder(buf, { name: 'panel-image.png' }));
+      embedImg.setImage('attachment://panel-image.png');
+    } else {
+      embedImg.setImage(imageUrl);
+    }
+
+    const textBelow = blocksBelow
+      .filter(b => b.type === 'text' && b.content)
+      .map(b => b.content)
+      .join('\n');
+    if (textBelow) embedImg.setDescription(textBelow);
+
+    await channel.send({ embeds: [embedImg], ...(files.length ? { files } : {}) });
+  }
 }
 
 // ─── SLASH COMMAND HANDLER ────────────────────────────────────────────────────
