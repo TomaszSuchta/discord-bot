@@ -803,53 +803,57 @@ async function postTicketPanel(channel, guild) {
     { type: 'image', url: tp.embed?.image || '' },
   ];
 
-  // ── TWO-MESSAGE LAYOUT ────────────────────────────────────────────────────────
-  // Discord ALWAYS renders components (dropdowns) below the entire embed — no exceptions.
-  // The only way to achieve: [text] → [dropdown] → [image] in chat is two messages:
-  //   Message 1: embed with text/dividers + dropdown component attached
-  //   Message 2: embed with just the image
-  // Sent back-to-back from the same bot, Discord groups them visually into one block.
+  // ── SINGLE EMBED LAYOUT ───────────────────────────────────────────────────────
+  // One embed, one colored border — matching the UnrealShop layout exactly.
+  // Discord's rendering order for a single message is:
+  //   embed.description (text)
+  //   ↓
+  //   component row (dropdown) — sits between embed body and embed image
+  //   ↓  
+  //   embed.setImage() (the banner image at the bottom of the embed)
   //
-  // Block order from the dashboard determines layout:
-  //   Blocks BEFORE the dropdown → message 1 (above dropdown)
-  //   Blocks AFTER the dropdown  → message 2 (below dropdown, image-only embed)
+  // Key: use setDescription() not addFields(). Fields add padding that pushes
+  // the dropdown away visually. Description keeps everything tight and compact.
+  // Dividers are just a blank line with a zero-width space inside the description.
 
-  const dropdownIndex = blocks.findIndex(b => b.type === 'dropdown');
-  const splitAt = dropdownIndex === -1 ? blocks.length : dropdownIndex;
-  const blocksAbove = blocks.slice(0, splitAt);
-  const blocksBelow = blocks.slice(splitAt + 1);
+  const embed = new EmbedBuilder().setColor(tp.embed?.color || '#9b59b6');
+  if (tp.embed?.title)     embed.setTitle(tp.embed.title);
+  if (tp.embed?.thumbnail) embed.setThumbnail(tp.embed.thumbnail);
+  if (tp.embed?.footer)    embed.setFooter({ text: tp.embed.footer });
 
-  // ── Message 1: text + dividers + dropdown ─────────────────────────────────────
-  const embedTop = new EmbedBuilder().setColor(tp.embed?.color || '#9b59b6');
-  if (tp.embed?.title)     embedTop.setTitle(tp.embed.title);
-  if (tp.embed?.thumbnail) embedTop.setThumbnail(tp.embed.thumbnail);
-  if (tp.embed?.footer)    embedTop.setFooter({ text: tp.embed.footer });
+  // Build description from blocks — text and dividers go inline in the description string
+  // The image block sets embed.setImage(), dropdown block is just a position marker
+  let descParts = [];
+  let imageUrl = '';
+  let imageIsBase64 = false;
+  const files = [];
 
-  let pendingText = '';
-  let hasFields = false;
-
-  const flushText = () => {
-    if (pendingText.trim()) {
-      embedTop.addFields({ name: '\u200b', value: pendingText.trim(), inline: false });
-      pendingText = '';
-      hasFields = true;
-    }
-  };
-
-  for (const block of blocksAbove) {
+  for (const block of blocks) {
     if (block.type === 'text' && block.content) {
-      pendingText += (pendingText ? '\n' : '') + block.content;
+      descParts.push(block.content);
     } else if (block.type === 'divider') {
-      flushText();
-      embedTop.addFields({ name: '\u200b', value: '\u200b', inline: false });
-      hasFields = true;
+      // A line of ─── characters creates a visible divider line in Discord description
+      descParts.push('\u2015'.repeat(35));
+    } else if (block.type === 'image' && block.url) {
+      imageUrl = block.url;
+      imageIsBase64 = imageUrl.startsWith('data:');
     }
+    // dropdown block: just a marker, no action — component attaches to the whole message
   }
-  flushText();
 
-  // If no fields were added (e.g. only a title), set description instead so embed isn't blank
-  if (!hasFields && pendingText.trim()) {
-    embedTop.setDescription(pendingText.trim());
+  const descText = descParts.join('\n');
+  if (descText) embed.setDescription(descText);
+
+  // Image goes into setImage — Discord renders this at the BOTTOM of the embed,
+  // BELOW the component row. This is what creates the text→dropdown→image order.
+  if (imageUrl) {
+    if (imageIsBase64) {
+      const buf = Buffer.from(imageUrl.split(',')[1], 'base64');
+      files.push(new AttachmentBuilder(buf, { name: 'panel-image.png' }));
+      embed.setImage('attachment://panel-image.png');
+    } else {
+      embed.setImage(imageUrl);
+    }
   }
 
   const menu = new StringSelectMenuBuilder()
@@ -863,32 +867,7 @@ async function postTicketPanel(channel, guild) {
     })));
   const row = new ActionRowBuilder().addComponents(menu);
 
-  await channel.send({ embeds: [embedTop], components: [row] });
-
-  // ── Message 2: image embed (only if image block exists below dropdown) ────────
-  const imageBlock = blocksBelow.find(b => b.type === 'image' && b.url);
-  if (imageBlock) {
-    const imageUrl = imageBlock.url;
-    const imageIsBase64 = imageUrl.startsWith('data:');
-    const embedImg = new EmbedBuilder().setColor(tp.embed?.color || '#9b59b6');
-
-    const files = [];
-    if (imageIsBase64) {
-      const buf = Buffer.from(imageUrl.split(',')[1], 'base64');
-      files.push(new AttachmentBuilder(buf, { name: 'panel-image.png' }));
-      embedImg.setImage('attachment://panel-image.png');
-    } else {
-      embedImg.setImage(imageUrl);
-    }
-
-    const textBelow = blocksBelow
-      .filter(b => b.type === 'text' && b.content)
-      .map(b => b.content)
-      .join('\n');
-    if (textBelow) embedImg.setDescription(textBelow);
-
-    await channel.send({ embeds: [embedImg], ...(files.length ? { files } : {}) });
-  }
+  return channel.send({ embeds: [embed], components: [row], ...(files.length ? { files } : {}) });
 }
 
 // ─── SLASH COMMAND HANDLER ────────────────────────────────────────────────────
