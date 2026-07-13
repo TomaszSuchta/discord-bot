@@ -570,10 +570,9 @@ function buildWelcomeEmbed(member) {
 }
 
 // ─── READY ───────────────────────────────────────────────────────────────────
-// BUG FIX #1: discord.js v14 removed the 'clientReady' event name.
-// The correct event is 'ready'. Using 'clientReady' means this block NEVER fires —
-// slash commands never register, config never loads, member counter never sets up.
-client.once('ready', async () => {
+// discord.js v14 uses 'clientReady' (renamed from 'ready' in v13).
+// It will change again in v15 — for now this is correct.
+client.once('clientReady', async () => {
   console.log(`✅ Bot is online as ${client.user.tag}`);
   client.user.setActivity('Moderating the server', { type: 3 });
 
