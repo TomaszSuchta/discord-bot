@@ -796,72 +796,66 @@ async function postTicketPanel(channel, guild) {
   const types = tp.ticketTypes || [];
   if (types.length === 0) throw new Error('No ticket types configured. Add at least one in the dashboard.');
 
-  // Fall back to legacy flat config if blocks array doesn't exist yet
   const blocks = tp.blocks || [
     { type: 'text', content: tp.embed?.description || '' },
     { type: 'divider' },
     { type: 'dropdown' },
-    { type: 'divider' },
     { type: 'image', url: tp.embed?.image || '' },
   ];
+
+  // ── HOW THIS WORKS ────────────────────────────────────────────────────────────
+  // Discord's message structure is: [embed body] → [components] → [embed image].
+  // The embed's .setImage() image renders BELOW the components (dropdown).
+  // So the correct layout for "text → divider → dropdown → image" is:
+  //   - Put text + dividers in the embed description
+  //   - Put the image in embed.setImage() — it renders at the very bottom of the embed
+  //   - Attach the dropdown as a component — it renders between text and the image
+  // This matches exactly the layout in the UnrealShop screenshot.
+  //
+  // For dividers: Discord renders a horizontal line between embed FIELDS (not description).
+  // So we split text blocks into separate fields, with invisible ​ fields as dividers.
 
   const embed = new EmbedBuilder().setColor(tp.embed?.color || '#9b59b6');
   if (tp.embed?.title)     embed.setTitle(tp.embed.title);
   if (tp.embed?.thumbnail) embed.setThumbnail(tp.embed.thumbnail);
   if (tp.embed?.footer)    embed.setFooter({ text: tp.embed.footer });
 
-  // Walk through blocks and build the embed content in order.
-  // Text blocks become the description (concatenated), dividers become empty fields,
-  // and the image block sets the embed image. The dropdown block position is tracked
-  // separately — Discord always renders components below the embed, but we build
-  // the description text in the correct block order.
-  let descParts = [];
+  // Walk blocks in order, building fields and tracking image position
   let imageUrl = '';
   let imageIsBase64 = false;
-  let dropdownFound = false;
+  let pendingText = '';   // accumulate text until we hit a divider or end
+
+  const flushText = () => {
+    if (pendingText.trim()) {
+      embed.addFields({ name: '​', value: pendingText.trim(), inline: false });
+      pendingText = '';
+    }
+  };
 
   for (const block of blocks) {
     if (block.type === 'text' && block.content) {
-      descParts.push(block.content);
+      // Accumulate — we flush when we hit a divider so each text section becomes a field
+      pendingText += (pendingText ? '\n' : '') + block.content;
+
     } else if (block.type === 'divider') {
-      // Use a zero-width space field to create the horizontal line Discord renders
-      // between embed fields — this is exactly how dividers in the screenshot work.
-      // We collect them and add all at once after description.
-      descParts.push('__DIVIDER__');
+      flushText();
+      // An invisible field creates the horizontal rule Discord draws between fields
+      embed.addFields({ name: '​', value: '​', inline: false });
+
     } else if (block.type === 'image' && block.url) {
       imageUrl = block.url;
       imageIsBase64 = block.url.startsWith('data:');
+      // Image goes into setImage() — Discord renders this BELOW components
+
     } else if (block.type === 'dropdown') {
-      dropdownFound = true;
-      // Mark position in description with a blank line so the text above/below
-      // the dropdown is correctly separated. Discord renders components below the
-      // embed so we can't truly inject it mid-embed, but the text layout respects
-      // the block order visually.
-      descParts.push('__DROPDOWN_MARKER__');
+      flushText(); // flush any pending text before dropdown position marker
+      // Dropdown is a component — rendered by Discord between embed fields and embed image.
+      // No action needed here; we build the component after the loop.
     }
   }
+  flushText(); // flush any remaining text
 
-  // Build the description string: convert divider markers to blank lines,
-  // remove the dropdown marker (it's just a position guide).
-  const descText = descParts
-    .join('\n')
-    .replace(/\n?__DROPDOWN_MARKER__\n?/g, '')
-    .replace(/\n?__DIVIDER__\n?/g, '\n\u200b\n')  // zero-width space creates visual gap
-    .trim();
-
-  if (descText) embed.setDescription(descText);
-
-  // Add divider fields for any divider blocks that aren't inline with text.
-  // Count dividers that appear between non-text blocks.
-  const fieldDividers = blocks.filter(b => b.type === 'divider').length;
-  if (fieldDividers > 0 && !descText.includes('\u200b')) {
-    // If description didn't absorb them, add as embed fields
-    for (let i = 0; i < fieldDividers; i++) {
-      embed.addFields({ name: '\u200b', value: '\u200b', inline: false });
-    }
-  }
-
-  // Handle image
+  // Attach image via setImage so it renders at the bottom (below dropdown)
   const files = [];
   if (imageUrl) {
     if (imageIsBase64) {
@@ -873,7 +867,7 @@ async function postTicketPanel(channel, guild) {
     }
   }
 
-  // Build the select menu dropdown
+  // Build the select menu
   const menu = new StringSelectMenuBuilder()
     .setCustomId('ticket_type_select')
     .setPlaceholder(tp.placeholder || '✖ | No option selected')
