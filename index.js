@@ -43,14 +43,17 @@ http.createServer(async (req, res) => {
       introSystem: config.introSystem,
       welcomeMessage: config.welcomeMessage,
       customCommands: config.customCommands,
+      ticketCategoryName: config.ticketCategoryName,
     }, roles }));
   }
 
   if (req.method === 'POST' && req.url === '/config') {
     const data = await parseBody();
-    // Accept ALL config keys from dashboard
+    // Accept all config keys from dashboard.
+    // ticketPanel is excluded — it has its own /ticket-panel endpoint and
+    // should never be overwritten by a /config POST.
     for (const key of Object.keys(data)) {
-      config[key] = data[key];
+      if (key !== 'ticketPanel') config[key] = data[key];
     }
     console.log('Config updated, keys:', Object.keys(data).join(', '));
     saveConfig();
@@ -493,7 +496,7 @@ function logAction(guild, action, target, moderator, reason, color = '#ED4245') 
     const logChannel = guild.channels.cache.find(c => c.name === config.logChannelName);
     if (!logChannel) return;
     const embed = new EmbedBuilder().setColor(color).setTitle(action).setTimestamp();
-    if (target) embed.addFields({ name: 'User', value: `${target.tag} (${target.id})`, inline: true });
+    if (target) embed.addFields({ name: 'User', value: `${target.tag ?? target.username ?? String(target.id)} (${target.id})`, inline: true });
     if (moderator) embed.addFields({ name: moderator.bot ? 'Action' : 'Moderator', value: moderator.tag, inline: true });
     if (reason) embed.addFields({ name: 'Reason', value: reason });
     logChannel.send({ embeds: [embed] });
@@ -562,7 +565,7 @@ function buildWelcomeEmbed(member) {
 
   // Thumbnail: 'avatar' = member's avatar, a URL = custom image, '' = none
   if (wm.thumbnail === 'avatar') {
-    embed.setThumbnail(member.user.displayAvatarURL({ dynamic: true }));
+    embed.setThumbnail(member.user.displayAvatarURL({ forceStatic: false }));
   } else if (wm.thumbnail) {
     embed.setThumbnail(wm.thumbnail);
   }
@@ -634,9 +637,7 @@ client.on('guildMemberAdd', async (member) => {
       if (dm.image && dm.image.startsWith('http')) embed.setImage(dm.image);
 
       const sendOptions = { embeds: [embed] };
-      // If a button was configured, we can't add buttons to DMs via embeds alone —
-      // but we can append the link as plain text below the embed.
-      const components = [];
+      // If a button was configured, append the link as plain text below the embed.
       if (dm.btnLabel && dm.btnUrl) {
         // Send link as a separate line since buttons require component rows
         await member.send(sendOptions).catch(() => {});
@@ -701,7 +702,7 @@ client.on('messageCreate', async (message) => {
 
   // Bad word filter
   const lower = message.content.toLowerCase();
-  if (config.badWords.some(w => lower.includes(w))) {
+  if ((config.badWords || []).some(w => lower.includes(w))) {
     await message.delete().catch(() => {});
     const warn = await message.channel.send(`⚠️ ${message.author}, that language isn't allowed here.`);
     setTimeout(() => warn.delete().catch(() => {}), 5000);
@@ -1191,7 +1192,7 @@ client.on('interactionCreate', async (interaction) => {
       const embed = new EmbedBuilder()
         .setColor(warnCount >= config.warnThresholds.banAt ? '#ed4245' : warnCount >= config.warnThresholds.muteAt ? '#faa61a' : '#5865f2')
         .setTitle(`👤 ${target.user.tag}`)
-        .setThumbnail(target.user.displayAvatarURL({ dynamic: true }))
+        .setThumbnail(target.user.displayAvatarURL({ forceStatic: false }))
         .addFields(
           { name: 'User ID', value: target.user.id, inline: true },
           { name: 'Joined Server', value: joinedServer, inline: true },
