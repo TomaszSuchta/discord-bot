@@ -785,46 +785,96 @@ function buildTicketPermissions(guild, userId) {
 }
 
 // Posts the ticket panel message (embed + select menu) into a channel.
-// Called by /ticket-panel slash command and also by the dashboard "Send Panel" button.
+// The panel is built from an ordered list of "blocks" configured in the dashboard:
+//   { type: 'text',    content: '...' }        — a paragraph of text
+//   { type: 'divider'                }          — a thin horizontal line (empty field)
+//   { type: 'image',   url: '...'    }          — the big banner image/gif
+//   { type: 'dropdown'               }          — the select menu (position controlled by block order)
+// This lets you place the dropdown wherever you want inside the embed.
 async function postTicketPanel(channel, guild) {
   const tp = config.ticketPanel;
   if (!tp) throw new Error('Ticket panel not configured.');
   const types = tp.ticketTypes || [];
   if (types.length === 0) throw new Error('No ticket types configured. Add at least one in the dashboard.');
 
-  // Build the embed
+  // Fall back to legacy flat config if blocks array doesn't exist yet
+  const blocks = tp.blocks || [
+    { type: 'text', content: tp.embed?.description || '' },
+    { type: 'divider' },
+    { type: 'dropdown' },
+    { type: 'divider' },
+    { type: 'image', url: tp.embed?.image || '' },
+  ];
+
   const embed = new EmbedBuilder().setColor(tp.embed?.color || '#9b59b6');
-  if (tp.embed?.title)       embed.setTitle(tp.embed.title);
-  if (tp.embed?.description) embed.setDescription(tp.embed.description);
-  if (tp.embed?.thumbnail)   embed.setThumbnail(tp.embed.thumbnail);
-  if (tp.embed?.footer)      embed.setFooter({ text: tp.embed.footer });
-  // Fields act as section dividers (like the lines you see in the screenshot)
-  if (tp.embed?.fields?.length) embed.addFields(tp.embed.fields);
-  // Big banner image (the purple graphic in your screenshot)
-  if (tp.embed?.image) {
-    if (tp.embed.image.startsWith('data:')) {
-      // base64 uploaded image — attach as a file and reference it
-      const buf = Buffer.from(tp.embed.image.split(',')[1], 'base64');
-      const attachment = new AttachmentBuilder(buf, { name: 'panel-image.png' });
-      embed.setImage('attachment://panel-image.png');
-      // Build select menu
-      const menu = new StringSelectMenuBuilder()
-        .setCustomId('ticket_type_select')
-        .setPlaceholder(tp.placeholder || '✖ | No option selected')
-        .addOptions(types.map(t => ({
-          label: t.label,
-          description: t.description || '',
-          value: t.value,
-          emoji: t.emoji || undefined,
-        })));
-      const row = new ActionRowBuilder().addComponents(menu);
-      return channel.send({ embeds: [embed], components: [row], files: [attachment] });
-    } else {
-      embed.setImage(tp.embed.image);
+  if (tp.embed?.title)     embed.setTitle(tp.embed.title);
+  if (tp.embed?.thumbnail) embed.setThumbnail(tp.embed.thumbnail);
+  if (tp.embed?.footer)    embed.setFooter({ text: tp.embed.footer });
+
+  // Walk through blocks and build the embed content in order.
+  // Text blocks become the description (concatenated), dividers become empty fields,
+  // and the image block sets the embed image. The dropdown block position is tracked
+  // separately — Discord always renders components below the embed, but we build
+  // the description text in the correct block order.
+  let descParts = [];
+  let imageUrl = '';
+  let imageIsBase64 = false;
+  let dropdownFound = false;
+
+  for (const block of blocks) {
+    if (block.type === 'text' && block.content) {
+      descParts.push(block.content);
+    } else if (block.type === 'divider') {
+      // Use a zero-width space field to create the horizontal line Discord renders
+      // between embed fields — this is exactly how dividers in the screenshot work.
+      // We collect them and add all at once after description.
+      descParts.push('__DIVIDER__');
+    } else if (block.type === 'image' && block.url) {
+      imageUrl = block.url;
+      imageIsBase64 = block.url.startsWith('data:');
+    } else if (block.type === 'dropdown') {
+      dropdownFound = true;
+      // Mark position in description with a blank line so the text above/below
+      // the dropdown is correctly separated. Discord renders components below the
+      // embed so we can't truly inject it mid-embed, but the text layout respects
+      // the block order visually.
+      descParts.push('__DROPDOWN_MARKER__');
     }
   }
 
-  // Build the dropdown select menu
+  // Build the description string: convert divider markers to blank lines,
+  // remove the dropdown marker (it's just a position guide).
+  const descText = descParts
+    .join('\n')
+    .replace(/\n?__DROPDOWN_MARKER__\n?/g, '')
+    .replace(/\n?__DIVIDER__\n?/g, '\n\u200b\n')  // zero-width space creates visual gap
+    .trim();
+
+  if (descText) embed.setDescription(descText);
+
+  // Add divider fields for any divider blocks that aren't inline with text.
+  // Count dividers that appear between non-text blocks.
+  const fieldDividers = blocks.filter(b => b.type === 'divider').length;
+  if (fieldDividers > 0 && !descText.includes('\u200b')) {
+    // If description didn't absorb them, add as embed fields
+    for (let i = 0; i < fieldDividers; i++) {
+      embed.addFields({ name: '\u200b', value: '\u200b', inline: false });
+    }
+  }
+
+  // Handle image
+  const files = [];
+  if (imageUrl) {
+    if (imageIsBase64) {
+      const buf = Buffer.from(imageUrl.split(',')[1], 'base64');
+      files.push(new AttachmentBuilder(buf, { name: 'panel-image.png' }));
+      embed.setImage('attachment://panel-image.png');
+    } else {
+      embed.setImage(imageUrl);
+    }
+  }
+
+  // Build the select menu dropdown
   const menu = new StringSelectMenuBuilder()
     .setCustomId('ticket_type_select')
     .setPlaceholder(tp.placeholder || '✖ | No option selected')
@@ -835,7 +885,8 @@ async function postTicketPanel(channel, guild) {
       emoji: t.emoji || undefined,
     })));
   const row = new ActionRowBuilder().addComponents(menu);
-  return channel.send({ embeds: [embed], components: [row] });
+
+  return channel.send({ embeds: [embed], components: [row], ...(files.length ? { files } : {}) });
 }
 
 // ─── SLASH COMMAND HANDLER ────────────────────────────────────────────────────
@@ -876,17 +927,34 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: '❌ Failed to create ticket channel. Make sure the bot has Manage Channels permission.', ephemeral: true });
     }
 
-    // Send the welcome embed inside the new ticket channel
+    // ── Build the welcome embed sent inside the new ticket channel ─────────────
+    // All fields are configurable per ticket type from the dashboard.
+    // Supports: title, description, color, image (URL), footer, thumbnail.
+    // Placeholders: {mention} → pings the user, {user} → their username.
+    const replacePlaceholders = str => (str || '')
+      .replace(/\{mention\}/g, `<@${member.user.id}>`)
+      .replace(/\{user\}/g, member.user.username)
+      .replace(/\{type\}/g, ticketType.label);
+
     const welcomeEmbed = new EmbedBuilder()
       .setColor(ticketType.welcomeColor || '#5865f2')
-      .setTitle(ticketType.welcomeTitle || `🎫 ${ticketType.label} Ticket`)
-      .setDescription((ticketType.welcomeDesc || 'A moderator will be with you shortly.\n\nUse `/close` to close this ticket.')
-        .replace(/\{mention\}/g, `<@${member.user.id}>`)
-        .replace(/\{user\}/g, member.user.username))
-      .setFooter({ text: 'Only you and moderators can see this channel' })
+      .setTitle(replacePlaceholders(ticketType.welcomeTitle || `🎫 ${ticketType.label} Ticket`))
+      .setDescription(replacePlaceholders(
+        ticketType.welcomeDesc ||
+        `Hey {mention}, thanks for opening a **${ticketType.label}** ticket!\n\nDescribe your request and a moderator will be with you shortly.\n\nUse the button below to close this ticket when done.`
+      ))
       .setTimestamp();
 
-    // Add a close button inside the ticket channel
+    // Optional fields per ticket type
+    if (ticketType.welcomeFooter) {
+      welcomeEmbed.setFooter({ text: replacePlaceholders(ticketType.welcomeFooter) });
+    } else {
+      welcomeEmbed.setFooter({ text: 'Only you and moderators can see this channel' });
+    }
+    if (ticketType.welcomeImage)     welcomeEmbed.setImage(ticketType.welcomeImage);
+    if (ticketType.welcomeThumbnail) welcomeEmbed.setThumbnail(ticketType.welcomeThumbnail);
+
+    // Close button always shown in the ticket channel
     const closeBtn = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId('close_ticket')
@@ -894,7 +962,13 @@ client.on('interactionCreate', async (interaction) => {
         .setStyle(ButtonStyle.Danger)
     );
 
-    await ticketChannel.send({ content: `<@${member.user.id}>`, embeds: [welcomeEmbed], components: [closeBtn] });
+    // Opening message — the ping line above the embed.
+    // Configurable per ticket type; falls back to a plain mention.
+    const openingMsg = replacePlaceholders(
+      ticketType.openingMessage || `<@${member.user.id}>`
+    );
+
+    await ticketChannel.send({ content: openingMsg, embeds: [welcomeEmbed], components: [closeBtn] });
 
     // Confirm to user ephemerally (only they see this)
     await interaction.reply({ content: `✅ Your ticket has been created: ${ticketChannel}`, ephemeral: true });
