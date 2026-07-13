@@ -5,6 +5,8 @@ const {
   Client, GatewayIntentBits, EmbedBuilder, PermissionFlagsBits,
   ChannelType, REST, Routes, SlashCommandBuilder, AttachmentBuilder,
   ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, MessageFlags,
+  ContainerBuilder, TextDisplayBuilder, SeparatorBuilder, SeparatorSpacingSize,
+  MediaGalleryBuilder, MediaGalleryItemBuilder,
   Partials,
 } = require('discord.js');
 const fs = require('fs');
@@ -803,69 +805,90 @@ async function postTicketPanel(channel, guild) {
     { type: 'image', url: tp.embed?.image || '' },
   ];
 
-  // After extensive testing, Discord's actual rendering order for a message is:
-  //   1. embed.setImage() — always at the BOTTOM of the embed body
-  //   2. component row (dropdown) — always BELOW the entire embed
-  // There is no combination of setImage + components that puts dropdown above image.
-  //
-  // The only clean solution: TWO messages, no second embed border.
-  //   Message 1: embed (title + text + footer) + dropdown component
-  //   Message 2: plain image attachment (no embed = no second colored border)
-  //
-  // A plain attachment has no colored left border, so it looks like part of message 1.
-  // This matches the UnrealShop layout: one bordered embed, dropdown, then image below.
+  // ── DISCORD COMPONENTS V2 ─────────────────────────────────────────────────────
+  // Components V2 (MessageFlags.IsComponentsV2) lets you place text, separators,
+  // images, and select menus in ANY order inside one message.
+  // We use ContainerBuilder which gives the colored left border (like an embed).
+  // Inside the container we add components in block order:
+  //   TextDisplayBuilder  → text paragraph
+  //   SeparatorBuilder    → horizontal divider line
+  //   ActionRowBuilder    → the select menu dropdown
+  //   MediaGalleryBuilder → the image
+  // This is exactly how the UnrealShop bot achieves the layout.
 
-  const dropdownIndex = blocks.findIndex(b => b.type === 'dropdown');
-  const splitAt = dropdownIndex === -1 ? blocks.length : dropdownIndex;
-  const blocksAbove = blocks.slice(0, splitAt);
-  const blocksBelow  = blocks.slice(splitAt + 1);
+  const accentColor = parseInt((tp.embed?.color || '#9b59b6').replace('#', ''), 16);
+  const container = new ContainerBuilder().setAccentColor(accentColor);
 
-  // Build the top embed — text and dividers only, no image
-  const embed = new EmbedBuilder().setColor(tp.embed?.color || '#9b59b6');
-  if (tp.embed?.title)     embed.setTitle(tp.embed.title);
-  if (tp.embed?.thumbnail) embed.setThumbnail(tp.embed.thumbnail);
-  if (tp.embed?.footer)    embed.setFooter({ text: tp.embed.footer });
+  // Title as bold text at the top if set
+  if (tp.embed?.title) {
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`## ${tp.embed.title}`)
+    );
+  }
 
-  // Build description: text blocks joined, dividers become a blank line
-  const descParts = [];
-  for (const block of blocksAbove) {
+  // Walk blocks in order and add to container
+  const files = [];
+  let fileIndex = 0;
+
+  for (const block of blocks) {
     if (block.type === 'text' && block.content) {
-      descParts.push(block.content);
+      container.addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(block.content)
+      );
+
     } else if (block.type === 'divider') {
-      descParts.push('\u200b'); // zero-width space blank line — clean gap, no visible characters
+      container.addSeparatorComponents(
+        new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
+      );
+
+    } else if (block.type === 'dropdown') {
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId('ticket_type_select')
+        .setPlaceholder(tp.placeholder || '\u2716 | No option selected')
+        .addOptions(types.map(t => ({
+          label: t.label,
+          description: t.description || '',
+          value: t.value,
+          emoji: t.emoji || undefined,
+        })));
+      container.addActionRowComponents(
+        new ActionRowBuilder().addComponents(menu)
+      );
+
+    } else if (block.type === 'image' && block.url) {
+      const imageUrl = block.url;
+      if (imageUrl.startsWith('data:')) {
+        // Uploaded image — attach as file and reference via attachment://
+        const buf = Buffer.from(imageUrl.split(',')[1], 'base64');
+        const filename = `panel-image-${fileIndex++}.png`;
+        files.push(new AttachmentBuilder(buf, { name: filename }));
+        container.addMediaGalleryComponents(
+          new MediaGalleryBuilder().addItems(
+            new MediaGalleryItemBuilder().setURL(`attachment://${filename}`)
+          )
+        );
+      } else {
+        container.addMediaGalleryComponents(
+          new MediaGalleryBuilder().addItems(
+            new MediaGalleryItemBuilder().setURL(imageUrl)
+          )
+        );
+      }
     }
   }
-  if (descParts.length) embed.setDescription(descParts.join('\n'));
 
-  // Build dropdown
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId('ticket_type_select')
-    .setPlaceholder(tp.placeholder || '\u2716 | No option selected')
-    .addOptions(types.map(t => ({
-      label: t.label,
-      description: t.description || '',
-      value: t.value,
-      emoji: t.emoji || undefined,
-    })));
-  const row = new ActionRowBuilder().addComponents(menu);
-
-  // Send message 1: embed + dropdown
-  await channel.send({ embeds: [embed], components: [row] });
-
-  // Send message 2: image as a plain file attachment (NO embed wrapper = no second border)
-  // Plain attachments render flush below the previous message — looks like one unit.
-  const imageBlock = blocksBelow.find(b => b.type === 'image' && b.url);
-  if (imageBlock) {
-    const imageUrl = imageBlock.url;
-    if (imageUrl.startsWith('data:')) {
-      const buf = Buffer.from(imageUrl.split(',')[1], 'base64');
-      await channel.send({ files: [new AttachmentBuilder(buf, { name: 'panel-image.png' })] });
-    } else {
-      // For URLs, send as a plain message with just the URL — Discord auto-embeds images
-      // without a colored border, making it look seamless after the dropdown
-      await channel.send({ content: imageUrl });
-    }
+  // Footer as text at the bottom if set
+  if (tp.embed?.footer) {
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`-# ${tp.embed.footer}`)
+    );
   }
+
+  return channel.send({
+    components: [container],
+    flags: MessageFlags.IsComponentsV2,
+    ...(files.length ? { files } : {}),
+  });
 }
 
 // ─── SLASH COMMAND HANDLER ────────────────────────────────────────────────────
