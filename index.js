@@ -984,8 +984,8 @@ client.on('interactionCreate', async (interaction) => {
     if (!interaction.channel.topic?.match(/^\d{17,19}$/)) {
       return interaction.reply({ content: '❌ This button only works inside a ticket channel.', flags: MessageFlags.Ephemeral });
     }
-    if (!hasPermission(interaction.member, 'kick') && interaction.channel.topic !== interaction.user.id) {
-      return interaction.reply({ content: '❌ Only moderators can close tickets they did not open.', flags: MessageFlags.Ephemeral });
+    if (!hasPermission(interaction.member, 'kick')) {
+      return interaction.reply({ content: '❌ Only moderators and owners can close tickets.', flags: MessageFlags.Ephemeral });
     }
     await interaction.reply('🔒 Ticket closing in 5 seconds...');
     logAction(interaction.guild, '🎫 TICKET CLOSED', interaction.user, interaction.user, 'Closed via button', '#ed4245');
@@ -1160,8 +1160,8 @@ client.on('interactionCreate', async (interaction) => {
       if (!interaction.channel.topic?.match(/^\d{17,19}$/)) {
         return interaction.editReply('❌ This command can only be used inside a ticket channel.');
       }
-      if (!hasPermission(member, 'kick') && interaction.channel.topic !== member.user.id) {
-        return interaction.editReply('❌ Only moderators can close tickets they did not open.');
+      if (!hasPermission(member, 'kick')) {
+        return interaction.editReply('❌ Only moderators and owners can close tickets.');
       }
       interaction.editReply('🔒 Ticket closing in 5 seconds...');
       logAction(guild, '🎫 TICKET CLOSED', member.user, interaction.user, 'Ticket closed', '#ed4245');
