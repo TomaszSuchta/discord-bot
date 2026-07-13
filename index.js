@@ -997,7 +997,11 @@ client.on('interactionCreate', async (interaction) => {
   const { commandName, guild, member } = interaction;
 
   try {
-    await interaction.deferReply();
+    // deferReply can fail with error 10062 (Unknown Interaction) if Discord's 3-second
+    // acknowledgement window has already expired — e.g. right after a bot restart when
+    // startup tasks (config load, command registration) are still running.
+    // We catch this silently so it doesn't log as an unhandled error.
+    try { await interaction.deferReply(); } catch { return; }
 
     if (commandName === 'kick') {
       if (!hasPermission(member, 'kick')) return interaction.editReply('❌ No permission.');
