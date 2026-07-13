@@ -3,7 +3,11 @@ process.on('uncaughtException', (err) => console.error('Uncaught exception:', er
 
 const {
   Client, GatewayIntentBits, EmbedBuilder, PermissionFlagsBits,
-  ChannelType, REST, Routes, SlashCommandBuilder, AttachmentBuilder
+  ChannelType, REST, Routes, SlashCommandBuilder, AttachmentBuilder,
+  // BUG FIX #2: Partials are required so reaction events fire on messages that
+  // aren't in the bot's cache (e.g. messages posted before the bot started).
+  // Without these, messageReactionAdd/Remove silently never trigger for old messages.
+  Partials,
 } = require('discord.js');
 const fs = require('fs');
 require('dotenv').config();
@@ -161,10 +165,18 @@ http.createServer(async (req, res) => {
 // ─── CLIENT ──────────────────────────────────────────────────────────────────
 const client = new Client({
   intents: [
-    GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildModeration, GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildMessageReactions,
   ],
+  // BUG FIX #2 (continued): These three partials must ALL be present together.
+  // Message  — allows receiving reaction events for uncached messages
+  // Channel  — required when Message partial is used (reaction may be in uncached DM channel)
+  // Reaction — allows receiving the reaction data itself when it's only partially available
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
 // ─── RAILWAY VARIABLE PERSISTENCE ────────────────────────────────────────────
@@ -298,15 +310,16 @@ const defaultConfig = {
     dmImage: '',
   },
   permissions: {
-    kick:     ['👑⬩Owner', '📖⬩Moderator'],
-    ban:      ['👑⬩Owner', '📖⬩Moderator'],
-    unban:    ['👑⬩Owner', '📖⬩Moderator'],
-    mute:     ['👑⬩Owner', '📖⬩Moderator'],
-    unmute:   ['👑⬩Owner', '📖⬩Moderator'],
-    warn:     ['👑⬩Owner', '📖⬩Moderator'],
-    clear:    ['👑⬩Owner', '📖⬩Moderator'],
-    purge:    ['👑⬩Owner', '📖⬩Moderator'],
-    announce: ['👑⬩Owner'],
+    kick:      ['👑⬩Owner', '📖⬩Moderator'],
+    ban:       ['👑⬩Owner', '📖⬩Moderator'],
+    unban:     ['👑⬩Owner', '📖⬩Moderator'],
+    mute:      ['👑⬩Owner', '📖⬩Moderator'],
+    unmute:    ['👑⬩Owner', '📖⬩Moderator'],
+    warn:      ['👑⬩Owner', '📖⬩Moderator'],
+    clear:     ['👑⬩Owner', '📖⬩Moderator'],
+    purge:     ['👑⬩Owner', '📖⬩Moderator'],
+    announce:  ['👑⬩Owner'],
+    slowmode:  ['👑⬩Owner', '📖⬩Moderator'], // FEATURE 1
   },
 };
 
@@ -367,6 +380,16 @@ const commands = [
   new SlashCommandBuilder().setName('rules').setDescription('Show server rules'),
   new SlashCommandBuilder().setName('socials').setDescription('Show social media links'),
   new SlashCommandBuilder().setName('help').setDescription('Show all commands'),
+  // BUG FIX #3: /ticket and /close were listed in the dashboard's Commands page
+  // but never actually registered or implemented. Added here so they work.
+  new SlashCommandBuilder().setName('ticket').setDescription('Open a support ticket'),
+  new SlashCommandBuilder().setName('close').setDescription('Close this ticket channel (mods only)'),
+  // FEATURE 1: /slowmode — lets mods throttle a channel during raids or floods
+  new SlashCommandBuilder().setName('slowmode').setDescription('Set slowmode on this channel')
+    .addIntegerOption(o => o.setName('seconds').setDescription('Seconds between messages (0 = off, max 21600)').setRequired(true).setMinValue(0).setMaxValue(21600)),
+  // FEATURE 2: /userinfo — lets mods quickly look up a user's join date, roles, and warning count
+  new SlashCommandBuilder().setName('userinfo').setDescription('Show info about a user')
+    .addUserOption(o => o.setName('user').setDescription('User to look up (leave blank for yourself)')),
 ];
 
 async function registerCommands(clientId, guildId) {
@@ -473,7 +496,10 @@ function buildWelcomeEmbed(member) {
 }
 
 // ─── READY ───────────────────────────────────────────────────────────────────
-client.once('clientReady', async () => {
+// BUG FIX #1: discord.js v14 removed the 'clientReady' event name.
+// The correct event is 'ready'. Using 'clientReady' means this block NEVER fires —
+// slash commands never register, config never loads, member counter never sets up.
+client.once('ready', async () => {
   console.log(`✅ Bot is online as ${client.user.tag}`);
   client.user.setActivity('Moderating the server', { type: 3 });
 
@@ -773,6 +799,109 @@ client.on('interactionCreate', async (interaction) => {
         interaction.editReply(`❌ Error: ${err.message}. Make sure the message ID is from this channel.`);
       }
 
+    // BUG FIX #3 (continued): Ticket and close command implementations.
+    // /ticket creates a private channel only visible to the user + moderators.
+    // /close deletes it after a 5-second countdown.
+    } else if (commandName === 'ticket') {
+      // Check if this user already has an open ticket
+      const existingTicket = guild.channels.cache.find(
+        c => c.name === `ticket-${member.user.username.toLowerCase().replace(/[^a-z0-9]/g, '')}` && c.topic === member.user.id
+      );
+      if (existingTicket) {
+        return interaction.editReply(`❌ You already have an open ticket: ${existingTicket}. Use \`/close\` inside it to close it first.`);
+      }
+
+      // Find or create the Tickets category
+      let category = guild.channels.cache.find(c => c.name === config.ticketCategoryName && c.type === ChannelType.GuildCategory);
+      if (!category) {
+        category = await guild.channels.create({ name: config.ticketCategoryName, type: ChannelType.GuildCategory }).catch(() => null);
+      }
+
+      // Build permission overwrites: hide from @everyone, show to the user and mod roles
+      const permissionOverwrites = [
+        { id: guild.roles.everyone, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: member.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+      ];
+      // Also give access to all allowed mod roles
+      const modRoles = [...new Set([
+        ...(config.permissions.kick || []),
+        ...(config.permissions.ban || []),
+      ])];
+      for (const roleName of modRoles) {
+        const role = guild.roles.cache.find(r => r.name === roleName);
+        if (role) permissionOverwrites.push({ id: role.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages] });
+      }
+
+      const safeName = member.user.username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20) || 'user';
+      const ticketChannel = await guild.channels.create({
+        name: `ticket-${safeName}`,
+        type: ChannelType.GuildText,
+        topic: member.user.id, // store user ID in topic so we can find it later
+        parent: category?.id,
+        permissionOverwrites,
+      }).catch(err => { console.error('Ticket create error:', err); return null; });
+
+      if (!ticketChannel) return interaction.editReply('❌ Failed to create ticket channel. Make sure I have Manage Channels permission.');
+
+      const ticketEmbed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle('🎫 Support Ticket')
+        .setDescription(`Hey ${member}, thanks for opening a ticket!\n\nDescribe your issue and a moderator will be with you shortly.\n\nUse \`/close\` to close this ticket when you're done.`)
+        .setFooter({ text: 'Only you and moderators can see this channel' })
+        .setTimestamp();
+      await ticketChannel.send({ embeds: [ticketEmbed] });
+      interaction.editReply(`✅ Ticket created: ${ticketChannel}`);
+      logAction(guild, '🎫 TICKET OPENED', member.user, member.user, 'User opened a support ticket', '#5865f2');
+
+    } else if (commandName === 'close') {
+      // Must be inside a ticket channel (identified by the topic being a user ID)
+      if (!interaction.channel.topic?.match(/^\d{17,19}$/)) {
+        return interaction.editReply('❌ This command can only be used inside a ticket channel.');
+      }
+      if (!hasPermission(member, 'kick') && interaction.channel.topic !== member.user.id) {
+        return interaction.editReply('❌ Only moderators can close tickets they did not open.');
+      }
+      interaction.editReply('🔒 Ticket closing in 5 seconds...');
+      logAction(guild, '🎫 TICKET CLOSED', member.user, interaction.user, 'Ticket closed', '#ed4245');
+      setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
+
+    // FEATURE 1: /slowmode — throttle a channel to prevent message floods
+    } else if (commandName === 'slowmode') {
+      if (!hasPermission(member, 'clear')) return interaction.editReply('❌ No permission.');
+      const seconds = interaction.options.getInteger('seconds');
+      await interaction.channel.setRateLimitPerUser(seconds, `Slowmode set by ${interaction.user.tag}`);
+      if (seconds === 0) {
+        interaction.editReply('✅ Slowmode **disabled** in this channel.');
+      } else {
+        const label = seconds >= 3600 ? `${Math.floor(seconds/3600)}h ${seconds%3600 > 0 ? Math.floor((seconds%3600)/60)+'m' : ''}`.trim()
+                    : seconds >= 60   ? `${Math.floor(seconds/60)}m ${seconds%60 > 0 ? seconds%60+'s' : ''}`.trim()
+                    : `${seconds}s`;
+        interaction.editReply(`✅ Slowmode set to **${label}** in this channel.`);
+      }
+      logAction(guild, `⏱️ SLOWMODE (${seconds}s)`, null, interaction.user, `Set on #${interaction.channel.name}`, '#5865f2');
+
+    // FEATURE 2: /userinfo — quick moderator lookup for a user's join date, roles, and warnings
+    } else if (commandName === 'userinfo') {
+      const target = interaction.options.getMember('user') || member;
+      const warnCount = (warnings[target.user.id] || []).length;
+      const roles = target.roles.cache.filter(r => r.name !== '@everyone').map(r => r.toString()).join(', ') || 'None';
+      const joinedServer = target.joinedAt ? `<t:${Math.floor(target.joinedAt.getTime()/1000)}:R>` : 'Unknown';
+      const createdAccount = `<t:${Math.floor(target.user.createdAt.getTime()/1000)}:R>`;
+      const embed = new EmbedBuilder()
+        .setColor(warnCount >= config.warnThresholds.banAt ? '#ed4245' : warnCount >= config.warnThresholds.muteAt ? '#faa61a' : '#5865f2')
+        .setTitle(`👤 ${target.user.tag}`)
+        .setThumbnail(target.user.displayAvatarURL({ dynamic: true }))
+        .addFields(
+          { name: 'User ID', value: target.user.id, inline: true },
+          { name: 'Joined Server', value: joinedServer, inline: true },
+          { name: 'Account Created', value: createdAccount, inline: true },
+          { name: 'Warnings', value: warnCount === 0 ? '✅ None' : `⚠️ ${warnCount} warning(s)`, inline: true },
+          { name: 'Roles', value: roles.length > 1024 ? roles.slice(0, 1021) + '...' : roles },
+        )
+        .setFooter({ text: `Requested by ${interaction.user.tag}` })
+        .setTimestamp();
+      interaction.editReply({ embeds: [embed] });
+
     } else if (commandName === 'rules') {
       interaction.editReply(config.customCommands['rules']);
     } else if (commandName === 'socials') {
@@ -783,6 +912,8 @@ client.on('interactionCreate', async (interaction) => {
         .setTitle('📋 Bot Commands')
         .addFields(
           { name: '🔨 Moderation', value: '`/kick` `/ban` `/unban` `/mute` `/unmute` `/warn` `/warnings` `/clearwarnings` `/clear` `/purge`' },
+          { name: '⏱️ Channel Tools', value: '`/slowmode <seconds>` — Throttle a channel (0 to disable)\n`/userinfo [@user]` — Look up join date, roles, and warnings' },
+          { name: '🎫 Tickets', value: '`/ticket` — Open a support ticket  |  `/close` — Close a ticket (mods)' },
           { name: '🎭 Roles', value: '`/reactionrole` — Add a reaction role to a message' },
           { name: '⚡ Custom', value: '`/rules` `/socials`' },
         )
