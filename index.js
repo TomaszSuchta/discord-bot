@@ -803,59 +803,41 @@ async function postTicketPanel(channel, guild) {
     { type: 'image', url: tp.embed?.image || '' },
   ];
 
-  // ── SINGLE EMBED LAYOUT ───────────────────────────────────────────────────────
-  // One embed, one colored border — matching the UnrealShop layout exactly.
-  // Discord's rendering order for a single message is:
-  //   embed.description (text)
-  //   ↓
-  //   component row (dropdown) — sits between embed body and embed image
-  //   ↓  
-  //   embed.setImage() (the banner image at the bottom of the embed)
+  // After extensive testing, Discord's actual rendering order for a message is:
+  //   1. embed.setImage() — always at the BOTTOM of the embed body
+  //   2. component row (dropdown) — always BELOW the entire embed
+  // There is no combination of setImage + components that puts dropdown above image.
   //
-  // Key: use setDescription() not addFields(). Fields add padding that pushes
-  // the dropdown away visually. Description keeps everything tight and compact.
-  // Dividers are just a blank line with a zero-width space inside the description.
+  // The only clean solution: TWO messages, no second embed border.
+  //   Message 1: embed (title + text + footer) + dropdown component
+  //   Message 2: plain image attachment (no embed = no second colored border)
+  //
+  // A plain attachment has no colored left border, so it looks like part of message 1.
+  // This matches the UnrealShop layout: one bordered embed, dropdown, then image below.
 
+  const dropdownIndex = blocks.findIndex(b => b.type === 'dropdown');
+  const splitAt = dropdownIndex === -1 ? blocks.length : dropdownIndex;
+  const blocksAbove = blocks.slice(0, splitAt);
+  const blocksBelow  = blocks.slice(splitAt + 1);
+
+  // Build the top embed — text and dividers only, no image
   const embed = new EmbedBuilder().setColor(tp.embed?.color || '#9b59b6');
   if (tp.embed?.title)     embed.setTitle(tp.embed.title);
   if (tp.embed?.thumbnail) embed.setThumbnail(tp.embed.thumbnail);
   if (tp.embed?.footer)    embed.setFooter({ text: tp.embed.footer });
 
-  // Build description from blocks — text and dividers go inline in the description string
-  // The image block sets embed.setImage(), dropdown block is just a position marker
-  let descParts = [];
-  let imageUrl = '';
-  let imageIsBase64 = false;
-  const files = [];
-
-  for (const block of blocks) {
+  // Build description: text blocks joined, dividers become a blank line
+  const descParts = [];
+  for (const block of blocksAbove) {
     if (block.type === 'text' && block.content) {
       descParts.push(block.content);
     } else if (block.type === 'divider') {
-      // A line of ─── characters creates a visible divider line in Discord description
-      descParts.push('\u2015'.repeat(35));
-    } else if (block.type === 'image' && block.url) {
-      imageUrl = block.url;
-      imageIsBase64 = imageUrl.startsWith('data:');
-    }
-    // dropdown block: just a marker, no action — component attaches to the whole message
-  }
-
-  const descText = descParts.join('\n');
-  if (descText) embed.setDescription(descText);
-
-  // Image goes into setImage — Discord renders this at the BOTTOM of the embed,
-  // BELOW the component row. This is what creates the text→dropdown→image order.
-  if (imageUrl) {
-    if (imageIsBase64) {
-      const buf = Buffer.from(imageUrl.split(',')[1], 'base64');
-      files.push(new AttachmentBuilder(buf, { name: 'panel-image.png' }));
-      embed.setImage('attachment://panel-image.png');
-    } else {
-      embed.setImage(imageUrl);
+      descParts.push('\u200b'); // zero-width space blank line — clean gap, no visible characters
     }
   }
+  if (descParts.length) embed.setDescription(descParts.join('\n'));
 
+  // Build dropdown
   const menu = new StringSelectMenuBuilder()
     .setCustomId('ticket_type_select')
     .setPlaceholder(tp.placeholder || '\u2716 | No option selected')
@@ -867,7 +849,23 @@ async function postTicketPanel(channel, guild) {
     })));
   const row = new ActionRowBuilder().addComponents(menu);
 
-  return channel.send({ embeds: [embed], components: [row], ...(files.length ? { files } : {}) });
+  // Send message 1: embed + dropdown
+  await channel.send({ embeds: [embed], components: [row] });
+
+  // Send message 2: image as a plain file attachment (NO embed wrapper = no second border)
+  // Plain attachments render flush below the previous message — looks like one unit.
+  const imageBlock = blocksBelow.find(b => b.type === 'image' && b.url);
+  if (imageBlock) {
+    const imageUrl = imageBlock.url;
+    if (imageUrl.startsWith('data:')) {
+      const buf = Buffer.from(imageUrl.split(',')[1], 'base64');
+      await channel.send({ files: [new AttachmentBuilder(buf, { name: 'panel-image.png' })] });
+    } else {
+      // For URLs, send as a plain message with just the URL — Discord auto-embeds images
+      // without a colored border, making it look seamless after the dropdown
+      await channel.send({ content: imageUrl });
+    }
+  }
 }
 
 // ─── SLASH COMMAND HANDLER ────────────────────────────────────────────────────
