@@ -357,8 +357,7 @@ const defaultConfig = {
     // The embed that gets posted when you run /ticket-panel
     embed: {
       title: '🎫 Support Tickets',
-      description: '>> To make a purchase, select the appropriate option from the dropdown below.
->> After filling out the form, a ticket will be created.',
+      description: '>> To make a purchase, select the appropriate option from the dropdown below.\n>> After filling out the form, a ticket will be created.',
       color: '#9b59b6',
       image: '',        // URL or base64 — shown as the big image in the embed (like the banner in your screenshot)
       thumbnail: '',
@@ -376,7 +375,7 @@ const defaultConfig = {
         channelPrefix: 'ticket-purchase', // channel will be named: ticket-purchase-username
         // Welcome embed sent inside the new ticket channel
         welcomeTitle: '🛒 Purchase Ticket',
-        welcomeDesc: 'Thanks for opening a ticket! Describe what you want to purchase and we'll be right with you.',
+        welcomeDesc: "Thanks for opening a ticket! Describe what you want to purchase and we'll be right with you.",
         welcomeColor: '#9b59b6',
       },
       {
@@ -386,7 +385,7 @@ const defaultConfig = {
         emoji: '❓',
         channelPrefix: 'ticket-support',
         welcomeTitle: '❓ Support Ticket',
-        welcomeDesc: 'Thanks for opening a ticket! Describe your issue and a moderator will help you shortly.',
+        welcomeDesc: "Thanks for opening a ticket! Describe your issue and a moderator will help you shortly.",
         welcomeColor: '#5865f2',
       },
     ],
