@@ -171,7 +171,8 @@ http.createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/ticket-panel') {
     const data = await parseBody();
     config.ticketPanel = data;
-    saveConfig();
+    // Save to its own Railway variable — never bundled with main config
+    saveTicketPanelToCloud(data);
     res.writeHead(200); return res.end(JSON.stringify({ success: true }));
   }
 
@@ -246,17 +247,28 @@ async function loadConfigFromCloud() {
     `, { projectId: RAILWAY_PROJECT_ID, serviceId: RAILWAY_SERVICE_ID, environmentId: RAILWAY_ENVIRONMENT_ID });
     const vars = data?.data?.variables;
     console.log('Railway vars keys:', vars ? Object.keys(vars).join(', ') : 'null');
+    const result = {};
     if (vars?.BOT_CONFIG) {
       const parsed = JSON.parse(vars.BOT_CONFIG);
       console.log('✅ Config loaded from Railway Variables, keys:', Object.keys(parsed).join(', '));
-      return parsed;
+      Object.assign(result, parsed);
+    } else {
+      console.log('⚠️ No BOT_CONFIG variable found yet');
     }
-    console.log('⚠️ No BOT_CONFIG variable found yet');
+    // Load ticketPanel from its own dedicated variable so it's never overwritten
+    if (vars?.TICKET_PANEL_CONFIG) {
+      result.ticketPanel = JSON.parse(vars.TICKET_PANEL_CONFIG);
+      console.log('✅ Ticket panel config loaded from Railway Variables');
+    } else {
+      console.log('⚠️ No TICKET_PANEL_CONFIG found yet (will use defaults until saved)');
+    }
+    return Object.keys(result).length ? result : null;
   } catch (err) { console.error('Railway load error:', err.message); }
   return null;
 }
 
-async function saveConfigToCloud(configData) {
+// Save a single Railway variable by name
+async function saveRailwayVar(name, value) {
   if (!RAILWAY_TOKEN) return;
   try {
     const result = await railwayGraphQL(`
@@ -273,15 +285,32 @@ async function saveConfigToCloud(configData) {
       projectId: RAILWAY_PROJECT_ID,
       serviceId: RAILWAY_SERVICE_ID,
       environmentId: RAILWAY_ENVIRONMENT_ID,
-      name: 'BOT_CONFIG',
-      value: JSON.stringify(configData)
+      name,
+      value,
     });
     if (result.errors) {
-      console.error('Railway save error:', JSON.stringify(result.errors));
-    } else {
-      console.log('✅ Config saved to Railway Variables');
+      console.error(`Railway save error (${name}):`, JSON.stringify(result.errors));
+      return false;
     }
-  } catch (err) { console.error('Railway save error:', err.message); }
+    return true;
+  } catch (err) {
+    console.error(`Railway save error (${name}):`, err.message);
+    return false;
+  }
+}
+
+async function saveConfigToCloud(configData) {
+  if (!RAILWAY_TOKEN) return;
+  // Strip ticketPanel out of the main config save — it has its own variable
+  const { ticketPanel, ...mainConfig } = configData;
+  const ok = await saveRailwayVar('BOT_CONFIG', JSON.stringify(mainConfig));
+  if (ok) console.log('✅ Config saved to Railway Variables');
+}
+
+async function saveTicketPanelToCloud(panelData) {
+  if (!RAILWAY_TOKEN) return;
+  const ok = await saveRailwayVar('TICKET_PANEL_CONFIG', JSON.stringify(panelData));
+  if (ok) console.log('✅ Ticket panel saved to Railway Variables');
 }
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
