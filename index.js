@@ -53,7 +53,7 @@ http.createServer(async (req, res) => {
     // ticketPanel is excluded — it has its own /ticket-panel endpoint and
     // should never be overwritten by a /config POST.
     for (const key of Object.keys(data)) {
-      if (key !== 'ticketPanel') config[key] = data[key];
+      if (key !== 'ticketPanel' && key !== 'ticketPanels') config[key] = data[key];
     }
     console.log('Config updated, keys:', Object.keys(data).join(', '));
     saveConfig();
@@ -145,7 +145,7 @@ http.createServer(async (req, res) => {
   }
 
 
-  // Send ticket panel to a channel directly from the dashboard
+  // POST /send-panel — post a specific panel to a channel
   if (req.method === 'POST' && req.url === '/send-panel') {
     const data = await parseBody();
     const guild = client.guilds.cache.first();
@@ -154,25 +154,37 @@ http.createServer(async (req, res) => {
       ? guild.channels.cache.get(data.channelId)
       : guild.channels.cache.find(c => c.name === data.channelName && c.type === 0);
     if (!channel) { res.writeHead(404); return res.end(JSON.stringify({ error: 'Channel not found' })); }
+    // Find the specific panel by ID, fall back to first panel
+    const panels = config.ticketPanels || [];
+    const panel = data.panelId ? panels.find(p => p.id === data.panelId) : panels[0];
+    if (!panel) { res.writeHead(404); return res.end(JSON.stringify({ error: 'Panel not found. Save it first.' })); }
     try {
-      await postTicketPanel(channel, guild);
+      await postTicketPanel(channel, guild, panel);
       res.writeHead(200); return res.end(JSON.stringify({ success: true }));
     } catch (err) {
       res.writeHead(500); return res.end(JSON.stringify({ error: err.message }));
     }
   }
 
-  // Ticket panel config — GET returns current config, POST updates it
-  if (req.method === 'GET' && req.url === '/ticket-panel') {
+  // GET /ticket-panels — returns all panels
+  if (req.method === 'GET' && req.url === '/ticket-panels') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify(config.ticketPanel || {}));
+    return res.end(JSON.stringify(config.ticketPanels || []));
   }
 
-  if (req.method === 'POST' && req.url === '/ticket-panel') {
+  // POST /ticket-panels — save full panels array
+  if (req.method === 'POST' && req.url === '/ticket-panels') {
     const data = await parseBody();
-    config.ticketPanel = data;
-    // Save to its own Railway variable — never bundled with main config
-    saveTicketPanelToCloud(data);
+    config.ticketPanels = Array.isArray(data) ? data : [];
+    saveTicketPanelsToCloud();
+    res.writeHead(200); return res.end(JSON.stringify({ success: true }));
+  }
+
+  // DELETE /ticket-panels?id=xxx — delete a panel by ID
+  if (req.method === 'DELETE' && req.url?.startsWith('/ticket-panels')) {
+    const id = new URL('http://x' + req.url).searchParams.get('id');
+    config.ticketPanels = (config.ticketPanels || []).filter(p => p.id !== id);
+    saveTicketPanelsToCloud();
     res.writeHead(200); return res.end(JSON.stringify({ success: true }));
   }
 
@@ -255,12 +267,20 @@ async function loadConfigFromCloud() {
     } else {
       console.log('⚠️ No BOT_CONFIG variable found yet');
     }
-    // Load ticketPanel from its own dedicated variable so it's never overwritten
+    // Load ticket panels from their own dedicated variable
     if (vars?.TICKET_PANEL_CONFIG) {
-      result.ticketPanel = JSON.parse(vars.TICKET_PANEL_CONFIG);
-      console.log('✅ Ticket panel config loaded from Railway Variables');
+      const parsed = JSON.parse(vars.TICKET_PANEL_CONFIG);
+      // Migrate old single-panel format to array format
+      if (Array.isArray(parsed)) {
+        result.ticketPanels = parsed;
+      } else if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        // Old format — wrap in array with generated ID
+        result.ticketPanels = [{ id: 'panel_1', name: 'Default Panel', ...parsed }];
+        console.log('✅ Migrated legacy ticket panel to multi-panel format');
+      }
+      console.log(`✅ Ticket panels loaded from Railway Variables (${(result.ticketPanels||[]).length} panel(s))`);
     } else {
-      console.log('⚠️ No TICKET_PANEL_CONFIG found yet (will use defaults until saved)');
+      console.log('⚠️ No TICKET_PANEL_CONFIG found yet');
     }
     return Object.keys(result).length ? result : null;
   } catch (err) { console.error('Railway load error:', err.message); }
@@ -301,16 +321,16 @@ async function saveRailwayVar(name, value) {
 
 async function saveConfigToCloud(configData) {
   if (!RAILWAY_TOKEN) return;
-  // Strip ticketPanel out of the main config save — it has its own variable
-  const { ticketPanel, ...mainConfig } = configData;
+  // Strip ticket panels out of the main config — they have their own variable
+  const { ticketPanel, ticketPanels, ...mainConfig } = configData;
   const ok = await saveRailwayVar('BOT_CONFIG', JSON.stringify(mainConfig));
   if (ok) console.log('✅ Config saved to Railway Variables');
 }
 
-async function saveTicketPanelToCloud(panelData) {
+async function saveTicketPanelsToCloud() {
   if (!RAILWAY_TOKEN) return;
-  const ok = await saveRailwayVar('TICKET_PANEL_CONFIG', JSON.stringify(panelData));
-  if (ok) console.log('✅ Ticket panel saved to Railway Variables');
+  const ok = await saveRailwayVar('TICKET_PANEL_CONFIG', JSON.stringify(config.ticketPanels || []));
+  if (ok) console.log(`✅ Ticket panels saved to Railway Variables (${(config.ticketPanels||[]).length} panel(s))`);
 }
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
@@ -496,7 +516,8 @@ const commands = [
   new SlashCommandBuilder().setName('userinfo').setDescription('Show info about a user')
     .addUserOption(o => o.setName('user').setDescription('User to look up (leave blank for yourself)')),
   // Posts the ticket panel embed+dropdown in the current channel
-  new SlashCommandBuilder().setName('ticket-panel').setDescription('Post the ticket panel with dropdown menu (admin only)')
+  new SlashCommandBuilder().setName('ticket-panel').setDescription('Post a ticket panel with dropdown menu (admin only)')
+    .addStringOption(o => o.setName('panel').setDescription('Name of the panel to post (leave blank for first panel)'))
     .addChannelOption(o => o.setName('channel').setDescription('Channel to post in (leave blank for current channel)')),
 ];
 
@@ -822,9 +843,13 @@ function buildTicketPermissions(guild, userId) {
 //   { type: 'image',   url: '...'    }          — the big banner image/gif
 //   { type: 'dropdown'               }          — the select menu (position controlled by block order)
 // This lets you place the dropdown wherever you want inside the embed.
-async function postTicketPanel(channel, guild) {
-  const tp = config.ticketPanel;
-  if (!tp) throw new Error('Ticket panel not configured.');
+async function postTicketPanel(channel, guild, tp) {
+  // tp can be passed directly (from /send-panel) or looked up from config
+  if (!tp) {
+    const panels = config.ticketPanels || [];
+    if (!panels.length) throw new Error('No ticket panels configured. Create one in the dashboard.');
+    tp = panels[0];
+  }
   const types = tp.ticketTypes || [];
   if (types.length === 0) throw new Error('No ticket types configured. Add at least one in the dashboard.');
 
@@ -878,7 +903,8 @@ async function postTicketPanel(channel, guild) {
         .addOptions(types.map(t => ({
           label: t.label,
           description: t.description || '',
-          value: t.value,
+          // Namespace value with panelId so multiple panels don't conflict
+          value: tp.id ? `${tp.id}__${t.value}` : t.value,
           emoji: t.emoji || undefined,
         })));
       container.addActionRowComponents(
@@ -926,9 +952,16 @@ client.on('interactionCreate', async (interaction) => {
   // ── Handle ticket type select menu ──────────────────────────────────────────
   if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_type_select') {
     const selectedValue = interaction.values[0];
-    const tp = config.ticketPanel;
-    const ticketType = (tp?.ticketTypes || []).find(t => t.value === selectedValue);
-    if (!ticketType) return interaction.reply({ content: '❌ Unknown ticket type.', flags: MessageFlags.Ephemeral });
+    // Values are namespaced as "panelId__typeValue" — split to find the right panel
+    const [panelId, typeValue] = selectedValue.includes('__')
+      ? selectedValue.split('__')
+      : [null, selectedValue];
+    const panels = config.ticketPanels || [];
+    const tp = panelId
+      ? panels.find(p => p.id === panelId)
+      : panels[0]; // fallback for old single-panel messages
+    const ticketType = (tp?.ticketTypes || []).find(t => t.value === typeValue || t.value === selectedValue);
+    if (!ticketType || !tp) return interaction.reply({ content: '❌ Unknown ticket type. The panel may have been reconfigured — ask an admin to repost it.', flags: MessageFlags.Ephemeral });
 
     const guild = interaction.guild;
     const member = interaction.member;
@@ -942,9 +975,10 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // Find or create the Tickets category
-    let category = guild.channels.cache.find(c => c.name === (tp?.categoryName || config.ticketCategoryName) && c.type === ChannelType.GuildCategory);
+    const categoryName = tp?.categoryName || config.ticketCategoryName || 'Tickets';
+    let category = guild.channels.cache.find(c => c.name === categoryName && c.type === ChannelType.GuildCategory);
     if (!category) {
-      category = await guild.channels.create({ name: tp?.categoryName || config.ticketCategoryName, type: ChannelType.GuildCategory }).catch(() => null);
+      category = await guild.channels.create({ name: categoryName, type: ChannelType.GuildCategory }).catch(() => null);
     }
 
     const ticketChannel = await guild.channels.create({
@@ -1237,13 +1271,22 @@ client.on('interactionCreate', async (interaction) => {
         .setTimestamp();
       interaction.editReply({ embeds: [embed] });
 
-    // /ticket-panel — posts the configured embed+dropdown into a channel
+    // /ticket-panel — posts a named panel to a channel
     } else if (commandName === 'ticket-panel') {
       if (!hasPermission(member, 'announce')) return interaction.editReply('❌ No permission. You need the announce role.');
       const targetChannel = interaction.options.getChannel('channel') || interaction.channel;
+      const panelName = interaction.options.getString('panel');
+      const panels = config.ticketPanels || [];
+      const panel = panelName
+        ? panels.find(p => p.name.toLowerCase() === panelName.toLowerCase())
+        : panels[0];
+      if (!panel) {
+        const names = panels.map(p => `"${p.name}"`).join(', ');
+        return interaction.editReply(`❌ Panel "${panelName}" not found. Available panels: ${names || 'none — create one in the dashboard'}`);
+      }
       try {
-        await postTicketPanel(targetChannel, guild);
-        interaction.editReply(`✅ Ticket panel posted in ${targetChannel}!`);
+        await postTicketPanel(targetChannel, guild, panel);
+        interaction.editReply(`✅ Panel "${panel.name}" posted in ${targetChannel}!`);
         setTimeout(() => interaction.deleteReply().catch(() => {}), 4000);
       } catch (err) {
         interaction.editReply(`❌ ${err.message}`);
