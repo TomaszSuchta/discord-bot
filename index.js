@@ -53,7 +53,7 @@ http.createServer(async (req, res) => {
     // ticketPanel is excluded — it has its own /ticket-panel endpoint and
     // should never be overwritten by a /config POST.
     for (const key of Object.keys(data)) {
-      if (key !== 'ticketPanel' && key !== 'ticketPanels') config[key] = data[key];
+      if (key !== 'ticketPanel') config[key] = data[key]; // ticketPanels IS allowed via /ticket-panels endpoint
     }
     console.log('Config updated, keys:', Object.keys(data).join(', '));
     saveConfig();
@@ -267,20 +267,28 @@ async function loadConfigFromCloud() {
     } else {
       console.log('⚠️ No BOT_CONFIG variable found yet');
     }
-    // Load ticket panels from their own dedicated variable
-    if (vars?.TICKET_PANEL_CONFIG) {
-      const parsed = JSON.parse(vars.TICKET_PANEL_CONFIG);
-      // Migrate old single-panel format to array format
-      if (Array.isArray(parsed)) {
-        result.ticketPanels = parsed;
-      } else if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        // Old format — wrap in array with generated ID
-        result.ticketPanels = [{ id: 'panel_1', name: 'Default Panel', ...parsed }];
-        console.log('✅ Migrated legacy ticket panel to multi-panel format');
+    // ticketPanels now lives inside BOT_CONFIG — loaded above via Object.assign.
+    // But check TICKET_PANEL_CONFIG for migration from the old separate variable.
+    if (!result.ticketPanels && vars?.TICKET_PANEL_CONFIG) {
+      try {
+        const parsed = JSON.parse(vars.TICKET_PANEL_CONFIG);
+        if (Array.isArray(parsed)) {
+          result.ticketPanels = parsed;
+        } else if (parsed && typeof parsed === 'object') {
+          result.ticketPanels = [{ id: 'panel_1', name: 'Default Panel', ...parsed }];
+        }
+        console.log(`✅ Migrated ticket panels from TICKET_PANEL_CONFIG (${(result.ticketPanels||[]).length} panel(s))`);
+      } catch(e) { console.error('Failed to parse TICKET_PANEL_CONFIG:', e.message); }
+    }
+    if (result.ticketPanels) {
+      // Migrate any single-object panel to array
+      if (!Array.isArray(result.ticketPanels)) {
+        result.ticketPanels = [{ id: 'panel_1', name: 'Default Panel', ...result.ticketPanels }];
       }
-      console.log(`✅ Ticket panels loaded from Railway Variables (${(result.ticketPanels||[]).length} panel(s))`);
+      console.log(`✅ Ticket panels ready: ${result.ticketPanels.length} panel(s)`);
     } else {
-      console.log('⚠️ No TICKET_PANEL_CONFIG found yet');
+      result.ticketPanels = [];
+      console.log('⚠️ No ticket panels found — starting with empty array');
     }
     return Object.keys(result).length ? result : null;
   } catch (err) { console.error('Railway load error:', err.message); }
@@ -321,16 +329,18 @@ async function saveRailwayVar(name, value) {
 
 async function saveConfigToCloud(configData) {
   if (!RAILWAY_TOKEN) return;
-  // Strip ticket panels out of the main config — they have their own variable
-  const { ticketPanel, ticketPanels, ...mainConfig } = configData;
-  const ok = await saveRailwayVar('BOT_CONFIG', JSON.stringify(mainConfig));
-  if (ok) console.log('✅ Config saved to Railway Variables');
+  // Save everything EXCEPT the old legacy ticketPanel key (replaced by ticketPanels array)
+  const { ticketPanel, ...dataToSave } = configData;
+  // Always include ticketPanels in the main BOT_CONFIG save so it's never lost
+  dataToSave.ticketPanels = config.ticketPanels || [];
+  const ok = await saveRailwayVar('BOT_CONFIG', JSON.stringify(dataToSave));
+  if (ok) console.log(`✅ Config saved to Railway Variables (includes ${dataToSave.ticketPanels.length} panel(s))`);
 }
 
 async function saveTicketPanelsToCloud() {
   if (!RAILWAY_TOKEN) return;
-  const ok = await saveRailwayVar('TICKET_PANEL_CONFIG', JSON.stringify(config.ticketPanels || []));
-  if (ok) console.log(`✅ Ticket panels saved to Railway Variables (${(config.ticketPanels||[]).length} panel(s))`);
+  // Save panels into BOT_CONFIG alongside the rest of the config
+  await saveConfigToCloud(config);
 }
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
@@ -636,13 +646,15 @@ client.once('clientReady', async () => {
     for (const key of Object.keys(cloudConfig)) {
       config[key] = cloudConfig[key];
     }
+    // Fill in any missing keys from defaults — but NEVER overwrite ticketPanels with []
     for (const key of Object.keys(defaultConfig)) {
+      if (key === 'ticketPanels') continue; // always trust what came from cloud
       if (config[key] === undefined) {
         config[key] = defaultConfig[key];
         console.log(`✅ Added missing key from defaults: ${key}`);
       }
     }
-    console.log('✅ Config restored from cloud');
+    console.log(`✅ Config restored from cloud — ${(config.ticketPanels||[]).length} ticket panel(s) loaded`);
   } else {
     console.log('⚠️ No cloud config found, using defaults');
   }
