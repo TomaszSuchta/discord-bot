@@ -267,28 +267,26 @@ async function loadConfigFromCloud() {
     } else {
       console.log('⚠️ No BOT_CONFIG variable found yet');
     }
-    // ticketPanels now lives inside BOT_CONFIG — loaded above via Object.assign.
-    // But check TICKET_PANEL_CONFIG for migration from the old separate variable.
-    if (!result.ticketPanels && vars?.TICKET_PANEL_CONFIG) {
+    // Load ticket panels from their own dedicated variable TICKET_PANEL_CONFIG.
+    // Panels are ALWAYS stored separately from BOT_CONFIG to avoid size limits.
+    if (vars?.TICKET_PANEL_CONFIG) {
       try {
         const parsed = JSON.parse(vars.TICKET_PANEL_CONFIG);
         if (Array.isArray(parsed)) {
           result.ticketPanels = parsed;
         } else if (parsed && typeof parsed === 'object') {
+          // Legacy single-panel format — migrate to array
           result.ticketPanels = [{ id: 'panel_1', name: 'Default Panel', ...parsed }];
+          console.log('✅ Migrated legacy single panel to array format');
         }
-        console.log(`✅ Migrated ticket panels from TICKET_PANEL_CONFIG (${(result.ticketPanels||[]).length} panel(s))`);
-      } catch(e) { console.error('Failed to parse TICKET_PANEL_CONFIG:', e.message); }
-    }
-    if (result.ticketPanels) {
-      // Migrate any single-object panel to array
-      if (!Array.isArray(result.ticketPanels)) {
-        result.ticketPanels = [{ id: 'panel_1', name: 'Default Panel', ...result.ticketPanels }];
+        console.log(`✅ Ticket panels loaded: ${(result.ticketPanels||[]).length} panel(s)`);
+      } catch(e) {
+        console.error('❌ Failed to parse TICKET_PANEL_CONFIG:', e.message);
+        result.ticketPanels = [];
       }
-      console.log(`✅ Ticket panels ready: ${result.ticketPanels.length} panel(s)`);
     } else {
       result.ticketPanels = [];
-      console.log('⚠️ No ticket panels found — starting with empty array');
+      console.log('⚠️ No TICKET_PANEL_CONFIG found — no panels saved yet');
     }
     return Object.keys(result).length ? result : null;
   } catch (err) { console.error('Railway load error:', err.message); }
@@ -329,18 +327,20 @@ async function saveRailwayVar(name, value) {
 
 async function saveConfigToCloud(configData) {
   if (!RAILWAY_TOKEN) return;
-  // Save everything EXCEPT the old legacy ticketPanel key (replaced by ticketPanels array)
-  const { ticketPanel, ...dataToSave } = configData;
-  // Always include ticketPanels in the main BOT_CONFIG save so it's never lost
-  dataToSave.ticketPanels = config.ticketPanels || [];
-  const ok = await saveRailwayVar('BOT_CONFIG', JSON.stringify(dataToSave));
-  if (ok) console.log(`✅ Config saved to Railway Variables (includes ${dataToSave.ticketPanels.length} panel(s))`);
+  // Strip both legacy and new panel keys — panels go into their own variable
+  const { ticketPanel, ticketPanels, ...mainConfig } = configData;
+  const ok = await saveRailwayVar('BOT_CONFIG', JSON.stringify(mainConfig));
+  if (ok) console.log('✅ Config saved to Railway Variables');
 }
 
 async function saveTicketPanelsToCloud() {
   if (!RAILWAY_TOKEN) return;
-  // Save panels into BOT_CONFIG alongside the rest of the config
-  await saveConfigToCloud(config);
+  // Panels go into their own dedicated variable, completely separate from BOT_CONFIG.
+  // This avoids Railway silently truncating BOT_CONFIG when panels make it too large.
+  const panels = config.ticketPanels || [];
+  const ok = await saveRailwayVar('TICKET_PANEL_CONFIG', JSON.stringify(panels));
+  if (ok) console.log(`✅ Ticket panels saved to TICKET_PANEL_CONFIG (${panels.length} panel(s))`);
+  else console.error('❌ Failed to save ticket panels to Railway');
 }
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
